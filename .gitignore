@@ -1,0 +1,15 @@
+# 1. Biological Data (Required: GitHub has a 100MB limit)
+data/
+*.csv
+*.pkl
+*.npy
+
+# 2. Python Internals (Required: Prevents merge conflicts)
+__pycache__/
+.pytest_cache/
+
+# 3. Notebook Backups (Required: Keeps your 'git status' clean)
+.ipynb_checkpoints/
+
+# 4. Local OS Junk
+.DS_Store

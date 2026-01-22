@@ -1,0 +1,18 @@
+name: cell_typing_3d
+channels:
+  - conda-forge
+  - bioconda
+  - defaults
+dependencies:
+  - python=3.10
+  - numpy
+  - pandas
+  - scipy
+  - scikit-learn
+  - matplotlib
+  - jupyter
+  - ipykernel
+  - seaborn
+  - plotly
+  - pytorch
+prefix: /Users/miles/miniconda3/envs/cell_typing_3d
