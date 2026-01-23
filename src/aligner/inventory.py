@@ -7,21 +7,25 @@ class SliceAtlas:
     """
     
     def __init__(self, slice_csv_path: str):
-        self.slices_by_n: Dict[int, List[Tuple[str, ...]]] = {}
-        self._load_slices(slice_csv_path)
+            self.n_to_ids: Dict[int, List[int]] = {}
+            self.id_to_labels: Dict[int, Tuple[str, ...]] = {}
+            self._load_slices(slice_csv_path)
     
     def _load_slices(self, path: str) -> None:
         df = pd.read_csv(path)
         for _, row in df.iterrows():
+            s_id = int(row['slice_id'])
             n = int(row['n_cells_frame'])
-            cell_names = tuple(sorted(str(row["cell_names"]).split(";")))
-            if n not in self.slices_by_n:
-                self.slices_by_n[n] = []
-            if cell_names not in self.slices_by_n[n]:
-                self.slices_by_n[n].append(cell_names)
+            labels = tuple(sorted(str(row["cell_names"]).split(";")))
+            if n not in self.n_to_ids:
+                self.n_to_ids[n] = []
+            self.n_to_ids[n].append(s_id)
+            self.id_to_labels[s_id] = labels
     
-    def get_candidates(self, n_cells: int) -> List[Tuple[str, ...]]:
-        """
-        Returns all valid cell-name combinations for a given cell count.
-        """
-        return self.slices_by_n.get(n_cells, [])
+    def get_candidates(self, n_cells: int) -> List[int]:
+        """Returns a list of slice_ids matching the cell count."""
+        return self.n_to_ids.get(n_cells, [])
+
+    def get_labels(self, slice_id: int) -> Tuple[str, ...]:
+        """Retrieves the biological labels for a specific slice ID."""
+        return self.id_to_labels.get(slice_id, ())

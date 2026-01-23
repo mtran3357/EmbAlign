@@ -1,31 +1,60 @@
+import pandas as pd
 import numpy as np
 from scipy.spatial.distance import pdist
 
 class EmbryoFrame:
     """
-    Represents a single time-point of an embryo's developmental trajectory.
-
-    This class handles the internal state of experimental cell coordinates,
-    providing standardized (centered and scaled) versions of the data for 
-    alignment algorithms.
-
-    Attributes:
-        embryo_id (str): Unique identifier for the embryo.
-        time_idx (int): The developmental time point (e.g., minute or index).
-        coords (np.ndarray): The raw (N, 3) coordinate matrix.
-        normalized_coords (np.ndarray): The (N, 3) matrix after scaling and centering.
-        scale_factor (float): The median pairwise distance used for scaling.
+    Represents a single time-point of an embryo's developmental trajectory,
+    filtered for valid experimental observations.
     """
     
-    def __init__(self, coords: np.ndarray, embryo_id: str, time_idx: int):
+    def __init__(self, coords: np.ndarray, embryo_id: str, time_idx:int, metadata: pd.DataFrame = None):
+        """
+        Internal constructor: use from_dataframe()  or from_matrix() for general_use
+        """
         self.embryo_id = embryo_id
         self.time_idx = time_idx
         self.coords = coords
+        self.valid_df = metadata
         
-        # Internal state placeholders
+        # State placeholders
         self.normalized_coords = None
         self.scale_factor = 1.0
+        self.pc1_axis = None
     
+    @classmethod
+    def from_dataframe(cls, df: pd.DataFrame, embryo_id: int, time_idx: int):
+        """
+        Extract a specific timepoint for a specific embryo.
+        """
+        subset = df[
+            (df['embryo_id'].astype(str) == str(embryo_id)) & 
+            (df['time_idx'].astype(int) == int(time_idx))
+        ]
+        # Filter for valid observations
+        valid_subset = subset[subset['valid'].astype(int) == 1].copy()
+            
+        if valid_subset.empty:
+            raise ValueError(f"No valid data found for Embryo {embryo_id} at T={time_idx}")
+        coords = valid_subset[['x_um', 'y_um', 'z_um']].values
+        return cls(coords, str(embryo_id), time_idx, metadata=valid_subset)
+    
+    @classmethod
+    def from_matrix(cls, matrix: np.ndarray, embryo_id: str = "Test_Inference",
+                    px_xy: float = 1.0, px_z: float = 1.0, mirror_lr: bool = False):
+        """Directly handles raw X,Y,Z matrices encountered during inference."""
+        
+        # Convert pixels to microns
+        phys_coords = matrix.copy(). astype(float)
+        phys_coords[:, 0:2] *= px_xy
+        phys_coords[:, 2] *= px_z
+        
+        # Mirror if requested
+        if mirror_lr:
+            phys_coords[:, 0] *= -1.0
+            
+        return cls(phys_coords, embryo_id, 0, None)
+        
     def __repr__(self)-> str:
         """Returns a string representation for easy debugging."""
         return f"EmbryoFrame(ID={self.embryo_id}, T={self.time_idx}, N={len(self)})"
@@ -36,12 +65,13 @@ class EmbryoFrame:
      
     def prepare(self) -> None:
         """
-        Standardizes the frame by scaling by median distance and centering.
+        Standardizes the frame by scaling by median distance and centering. Also calculates primary axis for rotation.
         """
         self.scale_factor = self._calculate_median_dist()
         # Normalization
         norm = self.coords / self.scale_factor
         self.normalized_coords = norm - norm.mean(axis=0)
+        self.pc1_axis = self._calculate_pc1(self.normalized_coords)
     
     def _calculate_median_dist(self) -> float:
         """
@@ -49,7 +79,23 @@ class EmbryoFrame:
         """
         if len(self) < 2: 
             return 1.0
-        return np.median(pdist(self.coords))
+        dists = pdist(self.coords)
+        med = np.median(dists)
+        #handle zero or non-finite distances
+        if med <= 0 or not np.isfinite(med):
+            return 1.0
+        
+        return med
+    
+    def _calculate_pc1(self, coords: np.ndarray) -> np.ndarray:
+        """Calculate first principal axis via SVD."""
+        U, S, Vt = np.linalg.svd(coords, full_matrices=False)
+        axis = Vt[0]
+        norm = np.linalg.norm(axis)
+        # Match legacy fallback for degenerate variance
+        if norm < 1e-8 or not np.isfinite(norm):
+            return np.array([1.0, 0.0, 0.0])
+        return axis / norm
     
 
 class ReferenceFrame:
@@ -65,22 +111,23 @@ class ReferenceFrame:
         self.n_cells = len(labels)
         
         # Pull 3d params from gaussian atlas
-        self.means, self.inv_covs = atlas.get_params(list(labels))
+        self.means, self.inv_covs, self.covs = atlas.get_params(list(labels))
         
-        # Pre compute center for coarse scan
+        # 3. Calculate center and PC1
         self.center_of_mass = self.means.mean(axis=0)
         self.centered_means = self.means - self.center_of_mass
-        
-        # Pre compute PC1 for coarse scan
         self.pc1_axis = self._calculate_pc1(self.centered_means)
+        # Note: Why don't we scale atlas params? Already scaled?
         
     def _calculate_pc1(self, coords: np.ndarray) -> np.ndarray:
-        """
-        Calculates the first principal axis via SVD.
-        """
-        U,S,Vt = np.linalg.svd(coords, full_matrices=False)
+        """Calculate first principal axis via SVD."""
+        U, S, Vt = np.linalg.svd(coords, full_matrices=False)
         axis = Vt[0]
-        return axis / (np.linalg.norm(axis) + 1e-12)
+        norm = np.linalg.norm(axis)
+        # Match legacy fallback for degenerate variance
+        if norm < 1e-8 or not np.isfinite(norm):
+            return np.array([1.0, 0.0, 0.0])
+        return axis / norm
     
     def __repr__(self):
         return f"ReferenceFrame(N={self.n_cells}, labels={self.labels[:3]}...)"

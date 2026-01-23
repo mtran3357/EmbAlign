@@ -12,7 +12,7 @@ class RigidTransformer:
         self.R = np.eye(3)
         self.t = np.zeros((1,3))
         
-    def fit(source: np.ndarray, target: np.ndarray) -> None:
+    def fit(self, source: np.ndarray, target: np.ndarray) -> None:
         """
         Calculates the optimal rotation R and translation t using the 
         Kabsch algorithm to map: source @ R + t ~= target.
@@ -37,7 +37,7 @@ class RigidTransformer:
             Vt[-1, :] *= -1
             R_col = Vt.T @ U.T
             
-        self.R = Vt.T @ U.T
+        self.R = R_col.T
         
         # 5. Find Translation
         self.t = mu_tgt - mu_src @ self.R
