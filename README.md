@@ -1,0 +1,1 @@
+This project provides a computational framework for the automated alignment and cell-type identification of C. elegans embryos using 3D nuclei coordinates. It leverages a biological Gaussian atlas to assign identity to experimental point clouds through geometric and probabilistic matching.
