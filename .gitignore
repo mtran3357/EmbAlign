@@ -13,3 +13,12 @@ __pycache__/
 
 # 4. Local OS Junk
 .DS_Store
+
+# No notebooks for now
+*.ipynb
+
+# Ignore the hidden checkpoints folder created by Jupyter
+.ipynb_checkpoints/
+*/.ipynb_checkpoints/*
+*.ipynb
+.ipynb_checkpoints/
