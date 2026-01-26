@@ -13,7 +13,7 @@ class LegacyEngine:
         }
         self.angle_step_rad = np.radians(self.settings['angle_step_deg'])
 
-    def align_frame(self, frame):
+    def align_frame(self, frame, trace=False):
         """Standardizes and aligns an experimental frame against biological hypotheses."""
         frame.prepare()
         
@@ -21,20 +21,31 @@ class LegacyEngine:
         candidate_ids = self.slice_db.get_candidates(len(frame))
         best_overall_result = None
         
+        # Trace to map loss landscape
+        landscape_traces = {}
+        
         for s_id in candidate_ids:
             # Build slice models
             labels = self.slice_db.get_labels(s_id)
             ref_frame = ReferenceFrame(labels, self.atlas)
             
             # Coarse scan
-            best_R_init, _ = self._run_coarse_scan(frame, ref_frame)
+            best_R_init, _, coarse_history = self._run_coarse_scan(frame, ref_frame, return_trace=trace)
             
             # ICP Refinement
-            refined_R, refined_t = self._refine_icp(frame, ref_frame, best_R_init)
+            refined_R, refined_t, icp_history = self._refine_icp(frame, ref_frame, best_R_init, return_trace=trace)
             
             # Label and score
             aligned_coords = frame.normalized_coords @ refined_R + refined_t
             final_cost, assignments = self._final_mah_score(aligned_coords, ref_frame)
+            
+            # Log trace if requested
+            if trace:
+                landscape_traces[s_id] = {
+                    'coarse': coarse_history,
+                    'icp_history': icp_history,
+                    'final_mahalanobis': final_cost
+                }
             
             # Track winner
             if best_overall_result is None or final_cost < best_overall_result['cost']:
@@ -46,12 +57,18 @@ class LegacyEngine:
                     'scale_factor': frame.scale_factor
                 }
             
+        if trace:
+                return best_overall_result, landscape_traces
+            
         return best_overall_result
         
-    def _run_coarse_scan(self, frame, ref_frame):
+    def _run_coarse_scan(self, frame, ref_frame, return_trace=False):
         """PC1 based rotation scan."""
         best_cost = float('inf')
         best_R = None
+        
+        # Trace storage
+        trace_data = [] if return_trace else None
         
         target_axis = ref_frame.pc1_axis
         # Scan both PC1 orientations
@@ -74,27 +91,44 @@ class LegacyEngine:
                 # Cost must be calculated in absolute atlas space
                 diff = transformed - ref_frame.means[col_ind]
                 cost = np.sum(diff**2) 
-            
+
+                # Record trace if requested
+                if return_trace:
+                    trace_data.append({
+                        'sign': sign,
+                        'angle_deg': np.degrees(i * self.angle_step_rad),
+                        'cost': cost
+                    })
+                
                 if cost < best_cost:
                     best_cost = cost
                     best_R = R_total
                         
-        return best_R, best_cost
+        return best_R, best_cost, trace_data
     
-    def _refine_icp(self, frame, ref_frame, initial_R):
+    def _refine_icp(self, frame, ref_frame, initial_R, return_trace=False):
         """Snap alignment into place with Euclidean ICP."""
         R_curr = initial_R
         t_curr = ref_frame.center_of_mass
         
-        for _ in range(self.settings.get('icp_iters', 5)):
+        # Trace
+        trace_data =[] if return_trace else None
+        
+        for i in range(self.settings.get('icp_iters', 5)):
             current_pts = frame.normalized_coords @ R_curr + t_curr
             _, col_ind = self.matcher.match(current_pts, ref_frame.means)
             
+            # Trace optionally
+            if return_trace:
+                # Calculate Euclidean cost for this iteration
+                diff = current_pts - ref_frame.means[col_ind]
+                cost = np.sum(diff**2)
+                trace_data.append({'iteration': i, 'cost': cost})
             # Calculate rigid transform for current correspondences
             self.transformer.fit(frame.normalized_coords, ref_frame.means[col_ind])
             R_curr, t_curr = self.transformer.R, self.transformer.t
             
-        return R_curr, t_curr
+        return R_curr, t_curr, trace_data
     
     def _final_mah_score(self, aligned_coords, ref_frame):
         """Vectorized Mahalanobis scoring for final label assignment."""
