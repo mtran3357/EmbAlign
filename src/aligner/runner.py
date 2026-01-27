@@ -28,6 +28,10 @@ class BatchReporter:
         aligned_coords = result.get('coords', np.full((n_valid, 3), np.nan))
         total_cost= result.get('cost', np.nan)
         
+        # Count how many cells the matcher 'rejected' into the slack bin
+        unassigned_mask = [label == "unassigned" for label in inferred_labels]
+        n_unassigned = sum(unassigned_mask)
+        
         # Frame level results
         true_labels = frame.valid_df['cell_name'].astype(str).tolist()
         correct = [i == t for i, t in zip(inferred_labels, true_labels)]
@@ -39,6 +43,8 @@ class BatchReporter:
             "canonical_time": meta.get('canonical_time', np.nan),
             "source_file": meta.get('source_file', "unknown"),
             "N_valid": n_valid,
+            "n_unassigned": n_unassigned,
+            "completeness": (n_valid - n_unassigned) / n_valid if n_valid > 0 else 0,
             "frame_accuracy": accuracy,
             "total_mahalanobis_cost": total_cost,
             "mean_mahalanobis_sq": total_cost / n_valid if n_valid > 0 else np.nan,
@@ -87,6 +93,9 @@ class BatchReporter:
         # Aggregate frame-level metrics
         frame_summary = frames.groupby('embryo_id').agg(
             n_frames = ('time_idx', 'nunique'),
+            avg_completeness = ('completeness', 'mean'), 
+            avg_accuracy = ('frame_accuracy', 'mean'),
+            total_unassigned = ('n_unassigned', 'sum'),
             max_N=('N_valid', 'max'),
             avg_mahalanobis_sq=('mean_mahalanobis_sq', 'mean'),
             mahalanobis_sq_sd =('mean_mahalanobis_sq', 'std'),
@@ -124,11 +133,33 @@ class BatchRunner:
     
     def run(self, df: pd.DataFrame, max_N: Optional[int] = None, trace: bool = False):
         """Groups the dataframe and processes each frame sequentially."""
+        # 1. Pipeline Manifest
+        print("="*40)
+        print(" PIPELINE RUN MANIFEST")
+        print("="*40)
+        print(f"Engine:    {self.engine.__class__.__name__}")
+        print(f"Matcher:   {self.engine.matcher.__class__.__name__}")
+        print(f"Transform: {self.engine.transformer.__class__.__name__}")
+        
+        # 2. Parameter Inspection
+        print("-" * 40)
+        print("Active Parameters:")
+        # Pull live tau from engine settings
+        print(f"  - Tau (Slack):  {self.engine.settings.get('tau', 'Not Set')}")
+        
+        # Pull internal matcher params
+        if hasattr(self.engine.matcher, 'epsilon'):
+            print(f"  - Epsilon:      {self.engine.matcher.epsilon}")
+        if hasattr(self.engine.matcher, 'max_iters'):
+            print(f"  - ICP Max Iters: {self.engine.settings.get('icp_iters')}")
+        
+        print(f"  - Angle Step:   {self.engine.settings.get('angle_step_deg')}°")
+        print("="*40 + "\n")
         df = df.sort_values(["embryo_id", "time_idx"])
         grouped = df.groupby(["embryo_id", "time_idx"], sort=False)
         
         print(f"Starting batch run for {len(grouped)} frames . . .")
-        
+        # Normal execution
         for (eid, tid), frame_df in tqdm(grouped, desc="Aligning Frames"):
             # Check cell count
             n_valid = len(frame_df[frame_df['valid'] == 1])

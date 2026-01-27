@@ -12,35 +12,66 @@ class RigidTransformer:
         self.R = np.eye(3)
         self.t = np.zeros((1,3))
         
-    def fit(self, source: np.ndarray, target: np.ndarray) -> None:
+    def fit_weighted(self, source: np.ndarray, target: np.ndarray, weights: np.ndarray):
         """
-        Calculates the optimal rotation R and translation t using the 
-        Kabsch algorithm to map: source @ R + t ~= target.
-        """
-        assert source.shape == target.shape
+        Optimal R and t for source @ R + t ~= (weights @ target)
         
-        # 1. Center
-        mu_src = source.mean(axis=0)
-        mu_tgt = target.mean(axis=0)
+        Args:
+            source: (N, 3) Experimental normalized coordinates.
+            target: (M, 3) Atlas reference means.
+            weights: (N, M) assignment matrix (dense or binary).
+        """
+        # Compute soft targets
+        target_soft = weights @ target
+        row_weights = weights.sum(axis=1, keepdims=True)
+        safe_weights = row_weights + 1e-12
+        # Compute centroids
+        mu_src = np.sum(source * row_weights, axis=0) / np.sum(safe_weights)
+        mu_tgt = np.sum(target_soft, axis=0) / np.sum(safe_weights)
         src_c = source - mu_src
-        tgt_c = target - mu_tgt
-        
-        # 2. Computer Cov Mat and SVD
+        tgt_c = target_soft - mu_tgt
+        # Cov Mat H and SVD
         H = src_c.T @ tgt_c
         U, S, Vt = np.linalg.svd(H)
-        
-        # 3. Find Rotation
+        # Rotation
         R_col = Vt.T @ U.T
-        
-        # 4. Handle Reflections
+        # Refelection
         if np.linalg.det(R_col) < 0:
             Vt[-1, :] *= -1
-            R_col = Vt.T @ U.T
-            
+            R_col = Vt.T @ U.T    
         self.R = R_col.T
+        # Find Translation
+        self.t= mu_tgt - mu_src @self.R
         
-        # 5. Find Translation
-        self.t = mu_tgt - mu_src @ self.R
+    # def fit(self, source: np.ndarray, target: np.ndarray) -> None:
+    #     """
+    #     Calculates the optimal rotation R and translation t using the 
+    #     Kabsch algorithm to map: source @ R + t ~= target.
+    #     """
+    #     assert source.shape == target.shape
+        
+    #     # 1. Center
+    #     mu_src = source.mean(axis=0)
+    #     mu_tgt = target.mean(axis=0)
+    #     src_c = source - mu_src
+    #     tgt_c = target - mu_tgt
+        
+    #     # 2. Computer Cov Mat and SVD
+    #     H = src_c.T @ tgt_c
+    #     U, S, Vt = np.linalg.svd(H)
+        
+    #     # 3. Find Rotation
+    #     R_col = Vt.T @ U.T
+        
+    #     # 4. Handle Reflections
+    #     if np.linalg.det(R_col) < 0:
+    #         Vt[-1, :] *= -1
+    #         R_col = Vt.T @ U.T
+            
+    #     self.R = R_col.T
+        
+    #     # 5. Find Translation
+    #     self.t = mu_tgt - mu_src @ self.R
         
     def transform(self, coords: np.ndarray) -> np.ndarray:
         """

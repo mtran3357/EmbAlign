@@ -24,6 +24,7 @@ class LegacyEngine:
         # Trace to map loss landscape
         landscape_traces = {}
         
+        tau = self.settings.get('tau', 1.0)
         for s_id in candidate_ids:
             # Build slice models
             labels = self.slice_db.get_labels(s_id)
@@ -37,8 +38,15 @@ class LegacyEngine:
             
             # Label and score
             aligned_coords = frame.normalized_coords @ refined_R + refined_t
-            final_cost, assignments = self._final_mah_score(aligned_coords, ref_frame)
-            
+            final_cost, assignments = self._final_mah_score(aligned_coords, ref_frame, tau=tau)
+            # Map indices to labels, handling the 'Slack' rejection index
+            # If an assignment index is >= n_real, it was matched to the slack bin
+            final_labels = []
+            for idx in assignments:
+                if idx < ref_frame.n_real:
+                    final_labels.append(ref_frame.labels[idx])
+                else:
+                    final_labels.append("unassigned")
             # Log trace if requested
             if trace:
                 landscape_traces[s_id] = {
@@ -52,7 +60,7 @@ class LegacyEngine:
                 best_overall_result = {
                     'slice_id': s_id,
                     'cost': final_cost,
-                    'labels': [ref_frame.labels[i] for i in assignments],
+                    'labels': final_labels,
                     'coords': aligned_coords,
                     'scale_factor': frame.scale_factor
                 }
@@ -115,9 +123,16 @@ class LegacyEngine:
         trace_data =[] if return_trace else None
         
         for i in range(self.settings.get('icp_iters', 5)):
-            current_pts = frame.normalized_coords @ R_curr + t_curr
-            _, col_ind = self.matcher.match(current_pts, ref_frame.means)
-            
+            current_pts = frame.normalized_coords @ R_curr + t_curr        
+            # Hybrid Assignment
+            if hasattr(self.matcher, 'compute_P'):
+                # Sinkhorn Path
+                W = self.matcher.match(current_pts, ref_frame.means, return_matrix = True)
+            else:
+                # Hungarian path
+                _, col_ind = self.matcher.match(current_pts, ref_frame.means)
+                W = np.zeros((len(current_pts), len(ref_frame.means)))
+                W[np.arange(len(current_pts)), col_ind] = 1.0
             # Trace optionally
             if return_trace:
                 # Calculate Euclidean cost for this iteration
@@ -125,16 +140,17 @@ class LegacyEngine:
                 cost = np.sum(diff**2)
                 trace_data.append({'iteration': i, 'cost': cost})
             # Calculate rigid transform for current correspondences
-            self.transformer.fit(frame.normalized_coords, ref_frame.means[col_ind])
+            self.transformer.fit_weighted(frame.normalized_coords, ref_frame.means, W)
             R_curr, t_curr = self.transformer.R, self.transformer.t
             
         return R_curr, t_curr, trace_data
     
-    def _final_mah_score(self, aligned_coords, ref_frame):
+    def _final_mah_score(self, aligned_coords, ref_frame, tau=1.0):
         """Vectorized Mahalanobis scoring for final label assignment."""
         N = len(aligned_coords)
-        D = np.zeros((N,N))
+        M = ref_frame.n_real
         
+        D = np.zeros((N, M))
         for i in range(N):
             mu = ref_frame.means[i]
             inv_cov = ref_frame.inv_covs[i]
@@ -142,5 +158,15 @@ class LegacyEngine:
             # Mahalanobis: (x-mu)^T * InvCov * (x-mu)
             D[:, i] = np.einsum('ij,jk,ik->i', diff, inv_cov, diff)
         
-        row_ind, col_ind = linear_sum_assignment(D)                    
-        return D[row_ind, col_ind].sum(), col_ind
+        total_size = N + M
+        D_aug = np.full((total_size, total_size), tau)
+        D_aug[:N, :M] = D
+        D_aug[N:, M:] = 0
+        
+        row_ind_full, col_ind_full = linear_sum_assignment(D_aug)
+        
+        # We only care about the assignments for our N real observations
+        final_assignments = col_ind_full[:N]
+        total_cost = D_aug[np.arange(N), final_assignments].sum()
+        
+        return total_cost, final_assignments

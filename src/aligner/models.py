@@ -108,7 +108,7 @@ class ReferenceFrame:
 
     def __init__(self, labels: tuple, atlas: 'StaticGaussianAtlas'):
         self.labels = labels
-        self.n_cells = len(labels)
+        self.n_real = len(labels)
         
         # Pull 3d params from gaussian atlas
         self.means, self.inv_covs, self.covs = atlas.get_params(list(labels))
@@ -128,6 +128,9 @@ class ReferenceFrame:
         if norm < 1e-8 or not np.isfinite(norm):
             return np.array([1.0, 0.0, 0.0])
         return axis / norm
+    
+    def __len__(self):
+        return self.n_real
     
     def __repr__(self):
         return f"ReferenceFrame(N={self.n_cells}, labels={self.labels[:3]}...)"
