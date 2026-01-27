@@ -5,6 +5,7 @@ import json
 from tqdm import tqdm
 from typing import Optional
 from .models import EmbryoFrame
+from sklearn.metrics import f1_score
 
 class BatchReporter:
     """Aggregates cell and frame metrics for final CSV output."""
@@ -45,6 +46,7 @@ class BatchReporter:
             "scale_factor": result.get('scale_factor', 1.0)
         })
         
+        
         # Cell-level records
         for i in range(n_valid):
             self.cell_records.append({
@@ -73,7 +75,42 @@ class BatchReporter:
                         "is_winner": s_id == result.get('slice_id')
                     })
                 
-    
+    def summarize_performance(self):
+        """Generates a diagnostic summary of alignment run."""
+        if not self.cell_records or not self.frame_records:
+            return pd.DataFrame()
+        
+        cells = pd.DataFrame(self.cell_records)
+        frames = pd.DataFrame(self.frame_records)
+        
+        frames['is_perfect'] = frames['frame_accuracy'] == 1.0
+        # Aggregate frame-level metrics
+        frame_summary = frames.groupby('embryo_id').agg(
+            n_frames = ('time_idx', 'nunique'),
+            max_N=('N_valid', 'max'),
+            avg_mahalanobis_sq=('mean_mahalanobis_sq', 'mean'),
+            mahalanobis_sq_sd =('mean_mahalanobis_sq', 'std'),
+            total_alignment_cost=('total_mahalanobis_cost', 'sum'),
+            prop_perfect_frames=('is_perfect', 'mean')
+        )
+
+        # Calculate F1 metrics
+        def get_macro_f1(group):
+            try:
+                return f1_score(group['cell_name'], group['inferred_label'], average='macro')
+            except:
+                return np.nan
+        
+        cell_summary = cells.groupby('embryo_id').agg(
+            total_cell_obs=('is_correct', 'count'),
+            cell_accuracy=('is_correct', 'mean')
+        )
+        cell_summary['f1_macro'] = cells.groupby('embryo_id').apply(get_macro_f1)
+        
+        summary = frame_summary.join(cell_summary).reset_index()
+        
+        return summary.sort_values('cell_accuracy', ascending=False)
+        
     def save(self, cell_out: str, frame_out:str):
         """Exports results to CSV."""
         pd.DataFrame(self.cell_records).to_csv(cell_out, index=False)
