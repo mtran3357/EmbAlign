@@ -1,10 +1,12 @@
 import pandas as pd
 import numpy as np
-import os
-import json
+# import os
+# import json
+import time
 from tqdm import tqdm
 from typing import Optional
-from .models import EmbryoFrame
+from aligner.models import EmbryoFrame
+from aligner.atlas import SliceAtlas
 from sklearn.metrics import f1_score
 
 class BatchReporter:
@@ -14,9 +16,9 @@ class BatchReporter:
         self.frame_records = []
         self.trace_records = []
         
-    def add_result(self, frame: EmbryoFrame, result: dict, traces: dict = None):
+    def add_result(self, frame, result, elapsed_time, atlas: "SliceAtlas", traces=None):
         """Parses engine output and frame metadata into flat records."""
-        
+
         # Metadata extraction
         eid = frame.embryo_id
         tid = frame.time_idx
@@ -26,7 +28,12 @@ class BatchReporter:
         # Results extraction
         inferred_labels = result.get('labels', [])
         aligned_coords = result.get('coords', np.full((n_valid, 3), np.nan))
+        #per_cell_mah = result.get('per_cell_mah', np.full(n_valid, np.nan))
         total_cost= result.get('cost', np.nan)
+        
+        # Find ground truth slice
+        true_slice = self.get_true_slice_id(frame, atlas)
+        picked_slice = result.get('slice_id')
         
         # Count how many cells the matcher 'rejected' into the slack bin
         unassigned_mask = [label == "unassigned" for label in inferred_labels]
@@ -34,37 +41,41 @@ class BatchReporter:
         
         # Frame level results
         true_labels = frame.valid_df['cell_name'].astype(str).tolist()
-        correct = [i == t for i, t in zip(inferred_labels, true_labels)]
-        accuracy = np.mean(correct) if n_valid > 0 else np.nan
-        
-        self.frame_records.append({
-            "embryo_id": eid,
-            "time_idx": tid,
-            "canonical_time": meta.get('canonical_time', np.nan),
-            "source_file": meta.get('source_file', "unknown"),
-            "N_valid": n_valid,
-            "n_unassigned": n_unassigned,
-            "completeness": (n_valid - n_unassigned) / n_valid if n_valid > 0 else 0,
-            "frame_accuracy": accuracy,
-            "total_mahalanobis_cost": total_cost,
-            "mean_mahalanobis_sq": total_cost / n_valid if n_valid > 0 else np.nan,
-            "best_slice_id": result.get('slice_id'),
-            "scale_factor": result.get('scale_factor', 1.0)
-        })
-        
-        
-        # Cell-level records
         for i in range(n_valid):
+            gt = true_labels[i]
+            pred = inferred_labels[i]
+            
+            # Biological Goodness: Sulston Prefix Ratio
+            lcp_len = self._get_sulston_lcp(gt, pred)
+            lineage_score = lcp_len / max(len(gt), len(pred)) if gt != "unassigned" else 0
+            
             self.cell_records.append({
                 "embryo_id": eid,
                 "time_idx": tid,
-                "cell_name": true_labels[i],
-                "inferred_label": inferred_labels[i],
+                "cell_name": gt,
+                "inferred_label": pred,
+                "is_correct": gt == pred,
+                "sulston_lcp": lcp_len,
+                "lineage_score": lineage_score,
                 "x_atlas_infer": aligned_coords[i, 0],
                 "y_atlas_infer": aligned_coords[i, 1],
-                "z_atlas_infer": aligned_coords[i, 2],
-                "is_correct": correct[i]
+                "z_atlas_infer": aligned_coords[i, 2]
             })
+            
+        self.frame_records.append({
+            "embryo_id": eid,
+            "time_idx": tid,
+            "runtime_sec": elapsed_time, # Timing metric
+            "N_valid": n_valid,
+            "n_unassigned": n_unassigned,
+            "completeness": (n_valid - n_unassigned) / n_valid if n_valid > 0 else 0,
+            "frame_accuracy": np.mean([gt == pred for gt, pred in zip(true_labels, inferred_labels)]),
+            "total_mahalanobis_cost": total_cost,
+            "mean_mahalanobis_sq": total_cost / n_valid if n_valid > 0 else np.nan,
+            "slice_match": true_slice == picked_slice if true_slice is not None else np.nan
+        })
+        
+
         
         # Optional traces
         if traces:
@@ -81,7 +92,7 @@ class BatchReporter:
                         "is_winner": s_id == result.get('slice_id')
                     })
                 
-    def summarize_performance(self):
+    def summarize_embryo_performance(self):
         """Generates a diagnostic summary of alignment run."""
         if not self.cell_records or not self.frame_records:
             return pd.DataFrame()
@@ -119,7 +130,58 @@ class BatchReporter:
         summary = frame_summary.join(cell_summary).reset_index()
         
         return summary.sort_values('cell_accuracy', ascending=False)
+    
+    def summarize_frame_diagnostics(self):
+        """
+        Generates a per-frame diagnostic report for benchmarking.
+        """
+        if not self.cell_records or not self.frame_records:
+            return pd.DataFrame()
         
+        df_cells = pd.DataFrame(self.cell_records)
+        df_frames = pd.DataFrame(self.frame_records)
+        
+        # aggregate cell metrics to frame level
+        frame_cell_stats = df_cells.groupby(['embryo_id', 'time_idx']).agg(
+            # avg_sulston_lcp=('sulston_lcp', 'mean'),
+            avg_lineage_score=('lineage_score', 'mean'),
+        ).reset_index()
+        diagnostics = pd.merge(
+            df_frames,
+            frame_cell_stats,
+            on=['embryo_id', 'time_idx'],
+            how='inner'
+        )
+        return diagnostics.sort_values(by=['embryo_id', 'time_idx'])
+    
+    def get_true_slice_id(self, frame, atlas: SliceAtlas):
+        """
+        Finds the slice_id in the atlas that exactly matches the frame's ground truth labels.
+        """
+        gt_labels = tuple(sorted(frame.valid_df['cell_name'].astype(str).tolist()))
+        n_cells = len(gt_labels)
+        # Get candidate slice IDs for this cell count
+        candidates = atlas.get_candidates(n_cells)
+        # Check each candidate for an exact label match
+        for s_id in candidates:
+            if atlas.get_labels(s_id) == gt_labels:
+                return s_id
+                
+        return None
+            
+    
+    def _get_sulston_lcp(self, label1, label2):
+        """Calculates the length of of the longos common prefix for sulston names."""
+        if not isinstance(label1, str) or not isinstance(label2, str):
+            return 0
+        lcp = 0
+        for c1, c2 in zip(label1, label2):
+            if c1==c2:
+                lcp += 1
+            else:
+                break
+        return lcp
+                        
     def save(self, cell_out: str, frame_out:str):
         """Exports results to CSV."""
         pd.DataFrame(self.cell_records).to_csv(cell_out, index=False)
@@ -171,14 +233,22 @@ class BatchRunner:
                 # Initialize
                 frame = EmbryoFrame.from_dataframe(df, eid, tid)
                 # Align
+                start_time = time.time()
                 if trace:
                     result, landscape = self.engine.align_frame(frame, trace=True)
                 else:
                     result = self.engine.align_frame(frame, trace=False)
                     landscape = None
+                elapsed = time.time() - start_time
                 # Log 
                 if result:
-                    self.reporter.add_result(frame, result, traces = landscape)
+                    self.reporter.add_result(
+                        frame, 
+                        result, 
+                        elapsed, 
+                        atlas=self.engine.slice_db, 
+                        traces=landscape
+                    )
             
             except Exception as e:
                 print(f"Skipping Embryo {eid} T={tid} due to error: {e}")
