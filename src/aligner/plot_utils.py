@@ -6,6 +6,87 @@ class SpatialVisualizer:
     def __init__(self, atlas):
         self.atlas = atlas
         
+    # def plot_alignment(self, frame, result, ax=None, title=None):
+    #     """
+    #     Plots 3D alignment with wireframe ellipsoids and displacement lines.
+    #     """
+    #     if ax is None:
+    #         fig = plt.figure(figsize=(10, 8))
+    #         ax = fig.add_subplot(111, projection='3d')
+            
+    #     inferred_labels = result.get('labels', [])
+    #     aligned_coords = result.get('coords', np.array([]))
+    #     n_cells = len(inferred_labels)
+        
+    #     # 1. Plot Atlas Gaussians (Wireframes for transparency)
+    #     for label in set(inferred_labels):
+    #         if label in self.atlas.means:
+    #             mu = self.atlas.means[label]
+    #             cov = self.atlas.covs[label]
+    #             ex, ey, ez = self._generate_ellipsoid(mu, cov, scale=1.0)
+    #             # Reverted to wireframe for better scannability
+    #             ax.plot_wireframe(ex, ey, ez, color='gray', alpha=0.5, linewidth=0.3)
+
+    #     # 2. Extract Labels and Accuracy
+    #     true_labels = []
+    #     if frame.valid_df is not None and 'cell_name' in frame.valid_df.columns:
+    #         true_labels = frame.valid_df['cell_name'].astype(str).tolist()
+
+    #     if true_labels:
+    #         is_correct = [inf == tru for inf, tru in zip(inferred_labels, true_labels)]
+    #         colors = ['#2ca02c' if c else '#d62728' for c in is_correct]
+    #         label_suffix = f" | Acc: {np.mean(is_correct):.1%}"
+    #     else:
+    #         colors = '#2ca02c'
+    #         label_suffix = ""
+
+    #     if n_cells > 0:
+    #         # 3. Draw Dashed Displacement Lines
+    #         # These connect the aligned centroid to where the atlas thinks it should be
+    #         for i, label in enumerate(inferred_labels):
+    #             if label in self.atlas.means:
+    #                 atlas_mu = self.atlas.means[label]
+    #                 ax.plot([aligned_coords[i, 0], atlas_mu[0]],
+    #                         [aligned_coords[i, 1], atlas_mu[1]],
+    #                         [aligned_coords[i, 2], atlas_mu[2]],
+    #                         color='black', linestyle='--', linewidth=1, alpha=0.5)
+
+    #         # 4. Plot Centroids
+    #         ax.scatter(aligned_coords[:, 0], aligned_coords[:, 1], aligned_coords[:, 2], 
+    #                    c=colors, s=40, edgecolors='white', linewidth=0.5, alpha=0.9)
+
+    #         # 5. Annotate early stages (N < 30)
+    #         if n_cells < 30:
+    #             for i in range(n_cells):
+    #                 pred = inferred_labels[i]
+    #                 x, y, z = aligned_coords[i]
+                    
+    #                 if true_labels and not is_correct[i]:
+    #                     # WRONG: Plot "Inferred (Red)" and "Ground Truth (Green)"
+    #                     gt = true_labels[i]
+    #                     # Show Prediction
+    #                     ax.text(x, y, z, f"P: {pred}", color='#d62728', 
+    #                             fontsize=8, fontweight='bold', alpha=0.9)
+    #                     # Show Truth (slightly offset on the y-axis for legibility)
+    #                     ax.text(x, y - 1, z, f"GT: {gt}", color='#2ca02c', 
+    #                             fontsize=8, fontweight='bold', alpha=0.9)
+    #                 else:
+    #                     # CORRECT: Just plot the name in standard gray/black
+    #                     ax.text(x, y, z, pred, fontsize=8, alpha=0.7)
+
+    #     # 6. Formatting
+    #     default_title = f"ID: {frame.embryo_id} | T: {frame.time_idx} | N: {n_cells}{label_suffix}"
+    #     ax.set_title(title if title else default_title, fontsize=12, pad=20)
+        
+    #     if n_cells > 0:
+    #         max_range = np.ptp(aligned_coords, axis=0).max() / 2.0
+    #         mid = np.mean(aligned_coords, axis=0)
+    #         ax.set_xlim(mid[0] - max_range, mid[0] + max_range)
+    #         ax.set_ylim(mid[1] - max_range, mid[1] + max_range)
+    #         ax.set_zlim(mid[2] - max_range, mid[2] + max_range)
+        
+    #     #ax.set_axis_off() 
+    #     return ax
     def plot_alignment(self, frame, result, ax=None, title=None):
         """
         Plots 3D alignment with wireframe ellipsoids and displacement lines.
@@ -24,7 +105,6 @@ class SpatialVisualizer:
                 mu = self.atlas.means[label]
                 cov = self.atlas.covs[label]
                 ex, ey, ez = self._generate_ellipsoid(mu, cov, scale=1.0)
-                # Reverted to wireframe for better scannability
                 ax.plot_wireframe(ex, ey, ez, color='gray', alpha=0.5, linewidth=0.3)
 
         # 2. Extract Labels and Accuracy
@@ -41,25 +121,33 @@ class SpatialVisualizer:
             label_suffix = ""
 
         if n_cells > 0:
-            # 3. Draw Dashed Displacement Lines
-            # These connect the aligned centroid to where the atlas thinks it should be
+            # 2. Draw Displacement Lines and Centroids
             for i, label in enumerate(inferred_labels):
                 if label in self.atlas.means:
                     atlas_mu = self.atlas.means[label]
                     ax.plot([aligned_coords[i, 0], atlas_mu[0]],
                             [aligned_coords[i, 1], atlas_mu[1]],
                             [aligned_coords[i, 2], atlas_mu[2]],
-                            color='black', linestyle='--', linewidth=1, alpha=0.5)
+                            color='black', linestyle='--', linewidth=1, alpha=0.3)
 
-            # 4. Plot Centroids
             ax.scatter(aligned_coords[:, 0], aligned_coords[:, 1], aligned_coords[:, 2], 
                        c=colors, s=40, edgecolors='white', linewidth=0.5, alpha=0.9)
 
-            # 5. Annotate early stages (N < 50)
-            if n_cells < 50:
-                for i, label in enumerate(inferred_labels):
-                    ax.text(aligned_coords[i, 0], aligned_coords[i, 1], aligned_coords[i, 2], 
-                            label, fontsize=8, fontweight='bold', alpha=0.8)
+            # 3. Combined Annotation Logic
+            if n_cells < 60:
+                for i in range(n_cells):
+                    pred = inferred_labels[i]
+                    x, y, z = aligned_coords[i]
+                    
+                    if true_labels and not is_correct[i]:
+                        # --- ERROR: Single Red Combined Label ---
+                        gt = true_labels[i]
+                        combined_label = f"P:{pred} (GT:{gt})"
+                        ax.text(x, y, z, combined_label, color='#d62728', 
+                                fontsize=8, fontweight='bold', alpha=0.9)
+                    else:
+                        # --- CORRECT: Standard Label ---
+                        ax.text(x, y, z, pred, color='black', fontsize=8, alpha=0.7)
 
         # 6. Formatting
         default_title = f"ID: {frame.embryo_id} | T: {frame.time_idx} | N: {n_cells}{label_suffix}"
@@ -72,7 +160,6 @@ class SpatialVisualizer:
             ax.set_ylim(mid[1] - max_range, mid[1] + max_range)
             ax.set_zlim(mid[2] - max_range, mid[2] + max_range)
         
-        #ax.set_axis_off() 
         return ax
 
     def plot_multi_alignment(self, frames, results, ncols=3, title="Temporal Alignment Sequence"):

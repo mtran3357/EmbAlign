@@ -1,6 +1,7 @@
 import numpy as np
 from scipy.optimize import linear_sum_assignment
 from aligner.models import ReferenceFrame
+from aligner.atlas import SliceAtlas 
 class LegacyEngine:
     def __init__(self, atlas, slice_db, matcher, transformer, settings: dict = None):
         self.atlas = atlas
@@ -25,6 +26,7 @@ class LegacyEngine:
         landscape_traces = {}
         
         tau = self.settings.get('tau', 1.0)
+        epsilon = self.settings.get('epsilon', 0.05)
         for s_id in candidate_ids:
             # Build slice models
             labels = self.slice_db.get_labels(s_id)
@@ -62,7 +64,8 @@ class LegacyEngine:
                     'cost': final_cost,
                     'labels': final_labels,
                     'coords': aligned_coords,
-                    'scale_factor': frame.scale_factor
+                    'scale_factor': frame.scale_factor,
+                    'settings_snapshot': self.settings.copy()
                 }
             
         if trace:
@@ -75,6 +78,7 @@ class LegacyEngine:
         best_cost = float('inf')
         best_R = None
         
+        tau = self.settings.get('tau', 1.0)
         # Trace storage
         trace_data = [] if return_trace else None
         
@@ -94,7 +98,7 @@ class LegacyEngine:
                 
                 # Center 
                 transformed = frame.normalized_coords @ R_total + ref_frame.center_of_mass
-                _, col_ind = self.matcher.match(transformed, ref_frame.means)
+                _, col_ind = self.matcher.match(transformed, ref_frame.means, tau = tau)
                 
                 # Cost must be calculated in absolute atlas space
                 diff = transformed - ref_frame.means[col_ind]
@@ -114,23 +118,66 @@ class LegacyEngine:
                         
         return best_R, best_cost, trace_data
     
+
+
+    # def _run_coarse_scan_mirror(self, frame, ref_frame, return_trace=False):
+    #     """
+    #     Fixed implementation ensuring the mirror flip is actually processed.
+    #     """
+    #     # 1. Store the original standard coordinates
+    #     original_coords = frame.normalized_coords.copy()
+        
+    #     # 2. Trial 1: Standard Orientation
+    #     best_R, best_cost, best_history = self._run_coarse_scan(
+    #         frame, ref_frame, return_trace=return_trace
+    #     )
+    #     best_is_mirrored = False
+
+    #     # 3. Trial 2: Mirrored Orientation
+    #     # IMPORTANT: We must modify the array IN-PLACE inside the frame object 
+    #     # so that _run_coarse_scan sees the change.
+    #     frame.normalized_coords[:, 0] = -original_coords[:, 0] 
+        
+    #     mirror_R, mirror_cost, mirror_history = self._run_coarse_scan(
+    #         frame, ref_frame, return_trace=return_trace
+    #     )
+
+    #     # 4. Selection Logic
+    #     # If costs are identical, we haven't fixed the AP-flip yet.
+    #     if mirror_cost < best_cost:
+    #         best_cost = mirror_cost
+    #         best_R = mirror_R
+    #         best_history = mirror_history
+    #         best_is_mirrored = True
+    #         # Keep current (mirrored) coords in frame
+    #     else:
+    #         # Revert to standard coords
+    #         frame.normalized_coords = original_coords
+
+    #     frame.is_mirrored = best_is_mirrored
+    #     return best_R, best_cost, best_history
+    # 
+    
     def _refine_icp(self, frame, ref_frame, initial_R, return_trace=False):
         """Snap alignment into place with Euclidean ICP."""
         R_curr = initial_R
         t_curr = ref_frame.center_of_mass
-        
+        # Pull dynamic settings for this iteration
+        tau = self.settings.get('tau', 1.0)
+        epsilon = self.settings.get('epsilon', 0.05)
+        icp_iters = self.settings.get('icp_iters', 5)
         # Trace
         trace_data =[] if return_trace else None
         
-        for i in range(self.settings.get('icp_iters', 5)):
+        for i in range(icp_iters):
             current_pts = frame.normalized_coords @ R_curr + t_curr        
             # Hybrid Assignment
             if hasattr(self.matcher, 'compute_P'):
                 # Sinkhorn Path
-                W = self.matcher.match(current_pts, ref_frame.means, return_matrix = True)
+                W = self.matcher.match(current_pts, ref_frame.means, tau=tau, epsilon=epsilon, return_matrix = True)
             else:
                 # Hungarian path
-                _, col_ind = self.matcher.match(current_pts, ref_frame.means)
+                _, col_ind = self.matcher.match(current_pts, ref_frame.means, tau=tau)
                 W = np.zeros((len(current_pts), len(ref_frame.means)))
                 W[np.arange(len(current_pts)), col_ind] = 1.0
             # Trace optionally

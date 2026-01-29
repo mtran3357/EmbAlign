@@ -1,7 +1,7 @@
 import numpy as np
 from scipy.spatial.distance import cdist
 from scipy.optimize import linear_sum_assignment
-from typing import Tuple
+from typing import Tuple, Union
 
 class HungarianMatcher:
     """
@@ -14,7 +14,8 @@ class HungarianMatcher:
     def __init__(self, tau: float = 1.0):
         self.tau = tau
     
-    def match(self, obs_coords: np.ndarray, ref_coords: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    def match(self, obs_coords: np.ndarray, ref_coords: np.ndarray, tau: float = None) -> Tuple[np.ndarray, np.ndarray]:
+        current_tau = tau if tau is not None else self.tau
         # 1. Compute Base Cost Matrix
         C = cdist(obs_coords, ref_coords, metric="sqeuclidean")
         N, M = C.shape
@@ -22,7 +23,7 @@ class HungarianMatcher:
         # 2. Augment Matrix with Slack
         # We create a square-ish augmentation to ensure rejection is an option for all points.
         total_size = N + M
-        C_aug = np.full((total_size, total_size), self.tau)
+        C_aug = np.full((total_size, total_size), current_tau)
         C_aug[:N, :M] = C
         C_aug[N:, M:] = 0  # Slack-to-slack matches are free.
         
@@ -51,7 +52,7 @@ class SinkhornMatcher:
         self.max_iters = max_iters
         self.stop_thr = stop_thr
         
-    def match(self, obs_coords: np.ndarray, ref_coords: np.ndarray, tau: float = 1.0,
+    def match(self, obs_coords: np.ndarray, ref_coords: np.ndarray, tau: float = 1.0, epsilon: float = None,
               return_matrix: bool = False) -> Union[Tuple[np.ndarray, np.ndarray], np.ndarray]:
         """
         Versatile interface to support both Legacy and Soft-Alignment pipelines.
@@ -60,7 +61,8 @@ class SinkhornMatcher:
             ref_coords: (M, 3) Atlas means.
             return_matrix: If True, returns (N, M) P matrix. Else returns indices.
         """
-        P = self.compute_P(obs_coords, ref_coords, tau=tau)
+        current_eps = epsilon if epsilon is not None else self.epsilon
+        P = self.compute_P(obs_coords, ref_coords, tau=tau, epsilon=current_eps)
         
         if return_matrix:
             return P
@@ -71,7 +73,7 @@ class SinkhornMatcher:
         
         return row_ind, col_ind
     
-    def compute_P(self, obs_coords: np.ndarray, ref_coords: np.ndarray, tau: float = 1.0) -> np.ndarray:
+    def compute_P(self, obs_coords: np.ndarray, ref_coords: np.ndarray, tau: float = 1.0, epsilon: float = None) -> np.ndarray:
         """
         Computes the (N, M) probability matrix using an internal (N+1, M+1) slack construction.
         
@@ -83,15 +85,18 @@ class SinkhornMatcher:
         C = cdist(obs_coords, ref_coords, metric="sqeuclidean")
         N, M = C.shape
         
+        curr_eps = epsilon if epsilon is not None else self.epsilon
         # Augment matrix with slack
         C_aug = np.full((N + 1, M + 1), tau)
         C_aug[:N, :M] = C
         C_aug[N,M] = 0
         
         # Vectorized Sinkhorn on augmented matrix
-        K = np.exp(-C / self.epsilon)
-        u = np.ones(K.shape[N + 1])
-        v = np.ones(K.shape[M + 1])
+        K = np.exp(-C_aug / curr_eps)
+        # u = np.ones(K.shape[N + 1])
+        # v = np.ones(K.shape[M + 1])
+        u = np.ones(N + 1) # Size for observations + slack
+        v = np.ones(M + 1) # Size for reference cells + slack
         
         for i in range(self.max_iters):
             u_prev = u.copy()
@@ -104,7 +109,7 @@ class SinkhornMatcher:
                 break
         
         # Construct full P and slice back to original dimensions
-        P_full - u[:, None] * K * v[None, :]
+        P_full = u[:, None] * K * v[None, :]
         # Only return correspondence betwee nreal observations and real atlas points
         return P_full[:N, :M]
     
