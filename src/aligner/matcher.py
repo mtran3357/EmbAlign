@@ -14,7 +14,7 @@ class HungarianMatcher:
     def __init__(self, tau: float = 1.0):
         self.tau = tau
     
-    def match(self, obs_coords: np.ndarray, ref_coords: np.ndarray, tau: float = None) -> Tuple[np.ndarray, np.ndarray]:
+    def match(self, obs_coords: np.ndarray, ref_coords: np.ndarray, tau: float = None, **kwargs) -> Tuple[np.ndarray, np.ndarray]:
         current_tau = tau if tau is not None else self.tau
         # 1. Compute Base Cost Matrix
         C = cdist(obs_coords, ref_coords, metric="sqeuclidean")
@@ -53,7 +53,7 @@ class SinkhornMatcher:
         self.stop_thr = stop_thr
         
     def match(self, obs_coords: np.ndarray, ref_coords: np.ndarray, tau: float = 1.0, epsilon: float = None,
-              return_matrix: bool = False) -> Union[Tuple[np.ndarray, np.ndarray], np.ndarray]:
+              return_matrix: bool = False, **kwargs) -> Union[Tuple[np.ndarray, np.ndarray], np.ndarray]:
         """
         Versatile interface to support both Legacy and Soft-Alignment pipelines.
         Args:

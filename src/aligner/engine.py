@@ -118,46 +118,6 @@ class LegacyEngine:
                         
         return best_R, best_cost, trace_data
     
-
-
-    # def _run_coarse_scan_mirror(self, frame, ref_frame, return_trace=False):
-    #     """
-    #     Fixed implementation ensuring the mirror flip is actually processed.
-    #     """
-    #     # 1. Store the original standard coordinates
-    #     original_coords = frame.normalized_coords.copy()
-        
-    #     # 2. Trial 1: Standard Orientation
-    #     best_R, best_cost, best_history = self._run_coarse_scan(
-    #         frame, ref_frame, return_trace=return_trace
-    #     )
-    #     best_is_mirrored = False
-
-    #     # 3. Trial 2: Mirrored Orientation
-    #     # IMPORTANT: We must modify the array IN-PLACE inside the frame object 
-    #     # so that _run_coarse_scan sees the change.
-    #     frame.normalized_coords[:, 0] = -original_coords[:, 0] 
-        
-    #     mirror_R, mirror_cost, mirror_history = self._run_coarse_scan(
-    #         frame, ref_frame, return_trace=return_trace
-    #     )
-
-    #     # 4. Selection Logic
-    #     # If costs are identical, we haven't fixed the AP-flip yet.
-    #     if mirror_cost < best_cost:
-    #         best_cost = mirror_cost
-    #         best_R = mirror_R
-    #         best_history = mirror_history
-    #         best_is_mirrored = True
-    #         # Keep current (mirrored) coords in frame
-    #     else:
-    #         # Revert to standard coords
-    #         frame.normalized_coords = original_coords
-
-    #     frame.is_mirrored = best_is_mirrored
-    #     return best_R, best_cost, best_history
-    # 
-    
     def _refine_icp(self, frame, ref_frame, initial_R, return_trace=False):
         """Snap alignment into place with Euclidean ICP."""
         R_curr = initial_R
