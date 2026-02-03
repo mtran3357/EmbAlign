@@ -77,7 +77,7 @@ class LegacyEngine:
         """PC1 based rotation scan."""
         best_cost = float('inf')
         best_R = None
-        
+        eps = self.settings.get('epsilon', 0.05) #
         tau = self.settings.get('tau', 1.0)
         # Trace storage
         trace_data = [] if return_trace else None
@@ -98,7 +98,7 @@ class LegacyEngine:
                 
                 # Center 
                 transformed = frame.normalized_coords @ R_total + ref_frame.center_of_mass
-                _, col_ind = self.matcher.match(transformed, ref_frame.means, tau = tau)
+                _, col_ind = self.matcher.match(transformed, ref_frame.means, tau=tau, epsilon=eps)
                 
                 # Cost must be calculated in absolute atlas space
                 diff = transformed - ref_frame.means[col_ind]
@@ -124,17 +124,18 @@ class LegacyEngine:
         t_curr = ref_frame.center_of_mass
         # Pull dynamic settings for this iteration
         tau = self.settings.get('tau', 1.0)
-        epsilon = self.settings.get('epsilon', 0.05)
+        eps = self.settings.get('epsilon', 0.05)
         icp_iters = self.settings.get('icp_iters', 5)
         # Trace
         trace_data =[] if return_trace else None
         
         for i in range(icp_iters):
+            #epsilon = self.settings.get('epsilon', 0.05)
             current_pts = frame.normalized_coords @ R_curr + t_curr        
             # Hybrid Assignment
             if hasattr(self.matcher, 'compute_P'):
                 # Sinkhorn Path
-                W = self.matcher.match(current_pts, ref_frame.means, tau=tau, epsilon=epsilon, return_matrix = True)
+                W = self.matcher.match(current_pts, ref_frame.means, tau=tau, epsilon=eps, return_matrix = True)
             else:
                 # Hungarian path
                 _, col_ind = self.matcher.match(current_pts, ref_frame.means, tau=tau)

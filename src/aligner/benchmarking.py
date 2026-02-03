@@ -22,10 +22,10 @@ class BenchmarkingSuite:
         
     def add_config(self, name: str, matcher_type: str = "hungarian", settings: dict = None):
         """Modularly registers a new pipeline configuration."""
+        settings = settings if settings is not None else {}
         if matcher_type == "sinkhorn":
-            matcher = SinkhornMatcher(
-                epsilon.settings.get('epsilon', 0.05) if settings else 0.05
-            )
+            eps = settings.get('epsilon', 0.05) 
+            matcher = SinkhornMatcher(epsilon=eps)
         else: 
             matcher = HungarianMatcher()
         
@@ -74,7 +74,7 @@ class BenchmarkingSuite:
         for name, engine in self.configs.items():
             print(f"\n>>> PROCESSING CONFIG: {name}")
             # Initialize a fresh reporter for this configuration
-            reporter = BatchReporter()
+            reporter = BatchReporter(full_df=full_df)
             success_count = 0
             
             for _, row in samples_df.iterrows():

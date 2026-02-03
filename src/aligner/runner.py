@@ -11,7 +11,8 @@ from sklearn.metrics import f1_score
 
 class BatchReporter:
     """Aggregates cell and frame metrics for final CSV output."""
-    def __init__(self):
+    def __init__(self, full_df: pd.DataFrame = None):
+        self.full_df = full_df
         self.cell_records = []
         self.frame_records = []
         self.trace_records = []
@@ -152,6 +153,22 @@ class BatchReporter:
             on=['embryo_id', 'time_idx'],
             how='inner'
         )
+        if self.full_df is not None:
+            # Get columns from full_df that aren't already in diagnostics
+            # We keep 'embryo_id' and 'time_idx' as our merge keys
+            meta_cols = self.full_df.columns.difference(diagnostics.columns).tolist()
+            
+            # Create a clean metadata map (unique row for every frame)
+            frame_meta = self.full_df[['embryo_id', 'time_idx'] + meta_cols].drop_duplicates(['embryo_id', 'time_idx'])
+            
+            # Standard Left Join: This is where 'canonical_time' enters the report
+            diagnostics = pd.merge(
+                diagnostics, 
+                frame_meta, 
+                on=['embryo_id', 'time_idx'], 
+                how='left'
+            )
+            
         return diagnostics.sort_values(by=['embryo_id', 'time_idx'])
     
     def get_true_slice_id(self, frame, atlas: SliceAtlas):
