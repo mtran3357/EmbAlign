@@ -136,6 +136,8 @@ class LegacyEngine:
             if hasattr(self.matcher, 'compute_P'):
                 # Sinkhorn Path
                 W = self.matcher.match(current_pts, ref_frame.means, tau=tau, epsilon=eps, return_matrix = True)
+                # For the TRACE , we take the Maximum A Posteriori (MAP) neighbor
+                col_ind = np.argmax(W, axis=1)
             else:
                 # Hungarian path
                 _, col_ind = self.matcher.match(current_pts, ref_frame.means, tau=tau)
