@@ -2,6 +2,7 @@ import numpy as np
 from scipy.optimize import linear_sum_assignment
 from aligner.models import ReferenceFrame
 from aligner.atlas import SliceAtlas 
+from aligner.matcher import HungarianMatcher, SinkhornMatcher
 class LegacyEngine:
     def __init__(self, atlas, slice_db, matcher, transformer, settings: dict = None):
         self.atlas = atlas
@@ -32,8 +33,11 @@ class LegacyEngine:
             labels = self.slice_db.get_labels(s_id)
             ref_frame = ReferenceFrame(labels, self.atlas)
             
-            # Coarse scan
-            best_R_init, _, coarse_history = self._run_coarse_scan(frame, ref_frame, return_trace=trace)
+            # Coarse scan (Hungarian or sinkhorn)
+            if isinstance(self.matcher, SinkhornMatcher):
+                best_R_init, _, coarse_history = self._run_coarse_scan_sinkhorn(frame, ref_frame, return_trace=trace)
+            else:
+                best_R_init, _, coarse_history = self._run_coarse_scan(frame, ref_frame, return_trace=trace)
             
             # ICP Refinement
             refined_R, refined_t, icp_history = self._refine_icp(frame, ref_frame, best_R_init, return_trace=trace)
@@ -116,6 +120,42 @@ class LegacyEngine:
                     best_cost = cost
                     best_R = R_total
                         
+        return best_R, best_cost, trace_data
+    
+    def _run_coarse_scan_sinkhorn(self, frame, ref_frame, return_trace=False):
+        """PC1 based rotation scan using Sinkhorn for landscape smoothing."""
+        best_cost = float('inf')
+        best_R = None
+        
+        # Pull settings
+        eps = self.settings.get('epsilon_coarse', 0.01) # Usually higher epsilon for coarse
+        tau = self.settings.get('tau', 1e6)
+        
+        trace_data = [] if return_trace else None
+        target_axis = ref_frame.pc1_axis
+
+        for sign in [+1.0, -1.0]:
+            R_init = self.transformer.get_rotation_between_vectors(sign * frame.pc1_axis, target_axis)
+            n_steps = int(2 * np.pi / self.angle_step_rad)
+            
+            for i in range(n_steps):
+                R_roll = self.transformer.get_rotation_about_axis(target_axis, i * self.angle_step_rad)
+                R_total = R_init @ R_roll
+                transformed = frame.normalized_coords @ R_total + ref_frame.center_of_mass
+                
+                # Get asisgnment matrix
+                P = self.matcher.match(transformed, ref_frame.means, tau=tau, epsilon=eps, return_matrix=True)
+                # Compute sinkhorn weighted cost
+                # sum(P_ij * ||x_i - y_j||^2)
+                dist_sq = np.sum((transformed[:, None, :] - ref_frame.means[None, :, :])**2, axis=2)
+                cost = np.sum(P * dist_sq)
+                
+                if return_trace:
+                    trace_data.append({'sign': sign, 'angle_deg': np.degrees(i * self.angle_step_rad), 'cost': cost})
+                
+                if cost < best_cost:
+                    best_cost, best_R = cost, R_total
+        
         return best_R, best_cost, trace_data
     
     def _refine_icp(self, frame, ref_frame, initial_R, return_trace=False):

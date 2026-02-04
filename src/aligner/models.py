@@ -21,6 +21,9 @@ class EmbryoFrame:
         self.normalized_coords = None
         self.scale_factor = 1.0
         self.pc1_axis = None
+        self.pc2_axis = None
+        self.pc3_axis = None
+        self.singular_values = None
     
     @classmethod
     def from_dataframe(cls, df: pd.DataFrame, embryo_id: int, time_idx: int):
@@ -71,7 +74,10 @@ class EmbryoFrame:
         # Normalization
         norm = self.coords / self.scale_factor
         self.normalized_coords = norm - norm.mean(axis=0)
-        self.pc1_axis = self._calculate_pc1(self.normalized_coords)
+        axes = self._calculate_pca(self.normalized_coords)
+        self.pc1_axis, self.pc2_axis, self.pc3_axis = axes
+        #self.pc1_axis = self._calculate_pc1(self.normalized_coords)
+        #axes = self._calculate_pca(self.normalized_coords)
     
     def _calculate_median_dist(self) -> float:
         """
@@ -96,6 +102,43 @@ class EmbryoFrame:
         if norm < 1e-8 or not np.isfinite(norm):
             return np.array([1.0, 0.0, 0.0])
         return axis / norm
+    def _calculate_pca(self, coords: np.ndarray):
+        """
+        Calculates all three principal axes via SVD.
+        Returns: (pc1, pc2, pc3)
+        """
+        # 1. Coordinates should already be centered at (0,0,0) 
+        # if they are 'normalized_coords', but we'll ensure it for PCA
+        centered = coords - np.mean(coords, axis=0)
+        
+        # 2. Compute SVD
+        # Vt rows are the principal components (eigenvectors)
+        # S contains the singular values (sqrt of eigenvalues)
+        U, S, Vt = np.linalg.svd(centered, full_matrices=False)
+        
+        # 3. Extract and normalize axes
+        axes = []
+        for i in range(3):
+            axis = Vt[i]
+            norm = np.linalg.norm(axis)
+            
+            # Handle degenerate cases (e.g., planar or linear distributions)
+            if norm < 1e-8 or not np.isfinite(norm):
+                # Fallback to standard basis if an axis is undefined
+                fallback = np.zeros(3)
+                fallback[i] = 1.0
+                axes.append(fallback)
+            else:
+                axes.append(axis / norm)
+                
+        self.pc1_axis = axes[0]
+        self.pc2_axis = axes[1]
+        self.pc3_axis = axes[2]
+        
+        # Important for your report: Explained Variance
+        # Tells us if the embryo is a sphere (S1 ~= S2) or a cigar (S1 >> S2)
+        self.singular_values = S
+        return axes
     
 
 class ReferenceFrame:
@@ -117,6 +160,9 @@ class ReferenceFrame:
         self.center_of_mass = self.means.mean(axis=0)
         self.centered_means = self.means - self.center_of_mass
         self.pc1_axis = self._calculate_pc1(self.centered_means)
+        self.pc2_axis = None
+        self.pc3_axis = None
+        self.singular_values = None
         # Note: Why don't we scale atlas params? Already scaled?
         
     def _calculate_pc1(self, coords: np.ndarray) -> np.ndarray:
@@ -128,6 +174,38 @@ class ReferenceFrame:
         if norm < 1e-8 or not np.isfinite(norm):
             return np.array([1.0, 0.0, 0.0])
         return axis / norm
+    
+    def _calculate_pca(self, coords: np.ndarray):
+        """
+        Calculates all three principal axes via SVD.
+        Returns: (pc1, pc2, pc3)
+        """
+        centered = coords - np.mean(coords, axis=0)
+        
+
+        U, S, Vt = np.linalg.svd(centered, full_matrices=False)
+        
+        # 3. Extract and normalize axes
+        axes = []
+        for i in range(3):
+            axis = Vt[i]
+            norm = np.linalg.norm(axis)
+            
+            # Handle degenerate cases (e.g., planar or linear distributions)
+            if norm < 1e-8 or not np.isfinite(norm):
+                # Fallback to standard basis if an axis is undefined
+                fallback = np.zeros(3)
+                fallback[i] = 1.0
+                axes.append(fallback)
+            else:
+                axes.append(axis / norm)
+                
+        self.pc1_axis = axes[0]
+        self.pc2_axis = axes[1]
+        self.pc3_axis = axes[2]
+    
+        self.singular_values = S
+        return axes
     
     def __len__(self):
         return self.n_real
