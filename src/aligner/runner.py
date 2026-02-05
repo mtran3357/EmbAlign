@@ -271,7 +271,7 @@ class BatchRunner:
                 print(f"Skipping Embryo {eid} T={tid} due to error: {e}")
                 
 class InferenceRunner:
-    def __init__(self, engine, px_xy=0.0183, px_z=0.75):
+    def __init__(self, engine, px_xy=0.1083, px_z=0.75):
         """Initializes the runner with a test embryo."""
         self.engine = engine
         self.px_xy = px_xy

@@ -3,10 +3,10 @@ import matplotlib.pyplot as plt
 import time
 import numpy as np
 from typing import Dict, List
-from aligner.engine import LegacyEngine
+from aligner.engine import LegacyEngine, EngineV1
 from aligner.matcher import HungarianMatcher, SinkhornMatcher
 from aligner.plot_utils import SpatialVisualizer
-from aligner.runner import BatchReporter
+from aligner.runner import BatchReporter, BatchRunner
 from aligner.models import EmbryoFrame
 
 class BenchmarkingSuite:
@@ -17,100 +17,101 @@ class BenchmarkingSuite:
         self.atlas = atlas
         self.slice_db = slice_db
         self.transformer = transformer
-        self.configs: Dict[str, LegacyEngine] = {}
+        self.configs = {}
         self.viz = SpatialVisualizer(atlas)
         
-    def add_config(self, name: str, matcher_type: str = "hungarian", settings: dict = None):
-        """Modularly registers a new pipeline configuration."""
+    def add_config(self, name: str, engine_type: str = "legacy", matcher_type: str = "hungarian", settings: dict = None):
+        """
+        Updated to support both Engine types.
+        engine_type: "legacy" or "v1"
+        """
         settings = settings if settings is not None else {}
-        if matcher_type == "sinkhorn":
-            eps = settings.get('epsilon', 0.05) 
-            matcher = SinkhornMatcher(epsilon=eps)
-        else: 
-            matcher = HungarianMatcher()
         
-        engine = LegacyEngine(
-            self.atlas, self.slice_db, matcher, self.transformer, settings
-        )
+        # 1. Select Matcher
+        if matcher_type == "sinkhorn":
+            matcher = SinkhornMatcher(
+                epsilon=settings.get('epsilon_coarse', 0.05),
+                max_iters=settings.get('max_iters', 100)
+            )
+        else: 
+            matcher = HungarianMatcher(tau=settings.get('tau_strict', 1e6))
+        
+        # 2. Select Engine Architecture
+        if engine_type == "v1":
+            engine = EngineV1(self.atlas, self.slice_db, matcher, self.transformer, settings)
+        else:
+            engine = LegacyEngine(self.atlas, self.slice_db, matcher, self.transformer, settings)
+            
         self.configs[name] = engine
     
-    def compare_frame(self, frame, title_prefix = ""):
-        """Runs all configs on one frame and shows side by side 3D plots."""
+    def compare_frame(self, frame, title_prefix=""):
         n_configs = len(self.configs)
         fig = plt.figure(figsize=(5 * n_configs, 5))
-        
         comparison_data = []
+        
+        # Ensure frame is prepared once for all configs
+        frame.prepare() 
         
         for i, (name, engine) in enumerate(self.configs.items()):
             start = time.time()
-            frame_copy = frame
-            result = engine.align_frame(frame_copy)
+            
+            # CRITICAL: We call WITHOUT trace=True so it returns only the result dict
+            result = engine.align_frame(frame) 
             elapsed = time.time() - start 
     
-            true_labels = frame.valid_df['cell_name'].astype(str).tolist()
-            acc = np.mean([inf == tru for inf, tru in zip(result['labels'], true_labels)])
+            # Standard Accuracy Check
+            true_labels = [str(l).upper() for l in frame.valid_df['cell_name']]
+            pred_labels = [str(l).upper() for l in result['labels']]
+            
+            # Handle list length mismatches if they occur
+            acc = np.mean([p == t for p, t in zip(pred_labels, true_labels)])
             
             comparison_data.append({
                 "config": name, 
                 "accuracy": acc,
                 "cost": result['cost'],
-                "runtime": elapsed
+                "runtime": elapsed,
+                "engine_type": engine.__class__.__name__
             })
     
             ax = fig.add_subplot(1, n_configs, i + 1, projection='3d')
-            full_title = f"{title_prefix}\nConfig: {name}\nAcc: {acc:.1%} | Cost: {result['cost']:.2f}"
+            full_title = f"{name}\nAcc: {acc:.1%} | Cost: {result['cost']:.2f}"
             self.viz.plot_alignment(frame, result, ax=ax, title=full_title)
             
         plt.tight_layout()
         plt.show()
         return pd.DataFrame(comparison_data)
     
-    def run_sweep(self, full_df, samples_df):
+    def run_sweep(self, df: pd.DataFrame, metadata_ref: pd.DataFrame = None):
         """
-        Fixed implementation to ensure results are captured and returned correctly.
+        Runs all registered configs on the provided dataframe.
+        To run a subset, pre-filter the 'df' before passing it in.
         """
         all_reports = []
         
+        # If metadata_ref isn't provided, we assume 'df' contains 
+        # all necessary columns (like canonical_time)
+        ref_df = metadata_ref if metadata_ref is not None else df
+        
         for name, engine in self.configs.items():
-            print(f"\n>>> PROCESSING CONFIG: {name}")
-            # Initialize a fresh reporter for this configuration
-            reporter = BatchReporter(full_df=full_df)
-            success_count = 0
+            # 1. Initialize Reporter with the reference metadata
+            reporter = BatchReporter(full_df=ref_df)
             
-            for _, row in samples_df.iterrows():
-                eid = row['embryo_id']
-                tid = row['time_idx']
-                
-                try:
-                    # Load the frame
-                    frame = EmbryoFrame.from_dataframe(full_df, eid, tid)
-                    
-                    # Align and time it
-                    start_time = time.time()
-                    result = engine.align_frame(frame)
-                    elapsed = time.time() - start_time
-                    
-                    # Add to the local reporter instance
-                    if result:
-                        reporter.add_result(frame, result, elapsed, atlas=self.slice_db)
-                        success_count += 1
-                        
-                except Exception as e:
-                    continue
+            # 2. Instantiate the BatchRunner with the specific configuration
+            runner = BatchRunner(engine, reporter)
             
-            print(f" -> Successfully aligned {success_count} / {len(samples_df)} frames.")
+            # 3. Trigger the professional run with progress tracking
+            # This handles grouping by embryo_id and time_idx internally
+            runner.run(df)
             
-            # Extract the diagnostic summary
+            # 4. Extract diagnostic summary
             summary = reporter.summarize_frame_diagnostics()
             if not summary.empty:
                 summary['config_name'] = name
                 all_reports.append(summary)
                 
-        # Concatenate all config reports into the final result
         if not all_reports:
-            print("CRITICAL: No reports were generated. Check the 'valid' column in full_df.")
+            print(">>> WARNING: No frames were successfully aligned. Check dataframe filtering.")
             return pd.DataFrame()
             
         return pd.concat(all_reports, ignore_index=True)
-
-        

@@ -12,7 +12,7 @@ class RigidTransformer:
         self.R = np.eye(3)
         self.t = np.zeros((1,3))
         
-    def fit_weighted(self, source: np.ndarray, target: np.ndarray, weights: np.ndarray):
+    def fit_weighted(self, source: np.ndarray, target: np.ndarray, P: np.ndarray):
         """
         Optimal R and t for source @ R + t ~= (weights @ target)
         
@@ -21,57 +21,41 @@ class RigidTransformer:
             target: (M, 3) Atlas reference means.
             weights: (N, M) assignment matrix (dense or binary).
         """
-        # Compute soft targets
-        target_soft = weights @ target
-        row_weights = weights.sum(axis=1, keepdims=True)
-        safe_weights = row_weights + 1e-12
-        # Compute centroids
-        mu_src = np.sum(source * row_weights, axis=0) / np.sum(safe_weights)
-        mu_tgt = np.sum(target_soft, axis=0) / np.sum(safe_weights)
+        # 1. Compute total mass and centroids
+        # We use the row/column sums of P as weights for each point set
+        w_source = np.sum(P, axis=1) # (N,)
+        w_target = np.sum(P, axis=0) # (M,)
+        total_mass = np.sum(w_source)
+        
+        if total_mass < 1e-9:
+            self.R, self.t = np.eye(3), np.zeros((1, 3))
+            return
+
+        mu_src = (w_source @ source) / total_mass
+        mu_tgt = (w_target @ target) / total_mass
+
+        # 2. Center the point clouds
         src_c = source - mu_src
-        tgt_c = target_soft - mu_tgt
-        # Cov Mat H and SVD
-        H = src_c.T @ tgt_c
+        tgt_c = target - mu_tgt
+
+        # 3. Compute Weighted Covariance Matrix H
+        # H = src_c^T @ P @ tgt_c
+        H = src_c.T @ P @ tgt_c
+        
+        # 4. SVD to find optimal rotation
         U, S, Vt = np.linalg.svd(H)
-        # Rotation
-        R_col = Vt.T @ U.T
-        # Refelection
-        if np.linalg.det(R_col) < 0:
+        
+        # Calculate R for column convention first
+        R_candidate = Vt.T @ U.T
+        
+        # 5. Handle Reflection (Right-handed coordinate system)
+        if np.linalg.det(R_candidate) < 0:
             Vt[-1, :] *= -1
-            R_col = Vt.T @ U.T    
-        self.R = R_col.T
-        # Find Translation
-        self.t= mu_tgt - mu_src @self.R
-        
-    # def fit(self, source: np.ndarray, target: np.ndarray) -> None:
-    #     """
-    #     Calculates the optimal rotation R and translation t using the 
-    #     Kabsch algorithm to map: source @ R + t ~= target.
-    #     """
-    #     assert source.shape == target.shape
-        
-    #     # 1. Center
-    #     mu_src = source.mean(axis=0)
-    #     mu_tgt = target.mean(axis=0)
-    #     src_c = source - mu_src
-    #     tgt_c = target - mu_tgt
-        
-    #     # 2. Computer Cov Mat and SVD
-    #     H = src_c.T @ tgt_c
-    #     U, S, Vt = np.linalg.svd(H)
-        
-    #     # 3. Find Rotation
-    #     R_col = Vt.T @ U.T
-        
-    #     # 4. Handle Reflections
-    #     if np.linalg.det(R_col) < 0:
-    #         Vt[-1, :] *= -1
-    #         R_col = Vt.T @ U.T
+            R_candidate = Vt.T @ U.T
             
-    #     self.R = R_col.T
-        
-    #     # 5. Find Translation
-    #     self.t = mu_tgt - mu_src @ self.R
+        # 6. Convert to Row Convention for use in 'coords @ R'
+        self.R = R_candidate.T 
+        self.t = (mu_tgt - mu_src @ self.R).reshape(1, 3)
         
     def transform(self, coords: np.ndarray) -> np.ndarray:
         """
@@ -97,8 +81,8 @@ class RigidTransformer:
         
         # Rodrigues' rotation formula
         vx = np.array([[0, -v[2], v[1]], [v[2], 0, -v[0]], [-v[1], v[0], 0]])
-        R_col = np.eye(3) + vx + vx @ vx * ((1.0 - c) / (s**2 + 1e-12))
-        return R_col.T
+        R = np.eye(3) + vx + vx @ vx * ((1.0 - c) / (s**2))
+        return R.T
     
     @staticmethod
     def get_rotation_about_axis(axis: np.ndarray, angle: float) -> np.ndarray:
@@ -109,9 +93,8 @@ class RigidTransformer:
         x, y, z = axis
         c, s = math.cos(angle), math.sin(angle)
         C = 1.0 - c
-        R_col = np.array([
-            [c + x*x*C,    x*y*C - z*s,  x*z*C + y*s],
-            [y*x*C + z*s,  c + y*y*C,    y*z*C - x*s],
-            [z*x*C - y*s,  z*y*C + x*s,  c + z*z*C]
+        return np.array([
+            [c + x*x*C,    x*y*C + z*s,  x*z*C - y*s],
+            [y*x*C - z*s,  c + y*y*C,    y*z*C + x*s],
+            [z*x*C + y*s,  z*y*C - x*s,  c + z*z*C]
         ])
-        return R_col.T

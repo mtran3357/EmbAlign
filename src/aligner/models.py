@@ -102,41 +102,25 @@ class EmbryoFrame:
         if norm < 1e-8 or not np.isfinite(norm):
             return np.array([1.0, 0.0, 0.0])
         return axis / norm
+    
     def _calculate_pca(self, coords: np.ndarray):
-        """
-        Calculates all three principal axes via SVD.
-        Returns: (pc1, pc2, pc3)
-        """
-        # 1. Coordinates should already be centered at (0,0,0) 
-        # if they are 'normalized_coords', but we'll ensure it for PCA
         centered = coords - np.mean(coords, axis=0)
-        
-        # 2. Compute SVD
-        # Vt rows are the principal components (eigenvectors)
-        # S contains the singular values (sqrt of eigenvalues)
         U, S, Vt = np.linalg.svd(centered, full_matrices=False)
         
-        # 3. Extract and normalize axes
         axes = []
         for i in range(3):
             axis = Vt[i]
-            norm = np.linalg.norm(axis)
             
-            # Handle degenerate cases (e.g., planar or linear distributions)
-            if norm < 1e-8 or not np.isfinite(norm):
-                # Fallback to standard basis if an axis is undefined
-                fallback = np.zeros(3)
-                fallback[i] = 1.0
-                axes.append(fallback)
-            else:
-                axes.append(axis / norm)
+            # DETERMINISTIC SIGN FLIP
+            # Project data onto this axis and check the skewness
+            projection = centered @ axis
+            # If the data is skewed toward the negative side, flip the axis
+            if np.sum(projection**3) < 0:
+                axis *= -1
                 
-        self.pc1_axis = axes[0]
-        self.pc2_axis = axes[1]
-        self.pc3_axis = axes[2]
-        
-        # Important for your report: Explained Variance
-        # Tells us if the embryo is a sphere (S1 ~= S2) or a cigar (S1 >> S2)
+            axes.append(axis / np.linalg.norm(axis))
+            
+        self.pc1_axis, self.pc2_axis, self.pc3_axis = axes
         self.singular_values = S
         return axes
     
