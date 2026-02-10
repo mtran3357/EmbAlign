@@ -269,6 +269,28 @@ class BatchRunner:
             
             except Exception as e:
                 print(f"Skipping Embryo {eid} T={tid} due to error: {e}")
+        # print run summary
+        print("\n" + "="*40)
+        print(" PIPELINE RESULTS SUMMARY")
+        print("="*40)
+        
+        if self.reporter.frame_records:
+            # Create a temporary DF from the reporter's records
+            results_df = pd.DataFrame(self.reporter.frame_records)
+            
+            avg_acc = results_df['frame_accuracy'].mean()
+            total_time = results_df['runtime_sec'].sum()
+            avg_time = results_df['runtime_sec'].mean()
+            n_frames = len(results_df)
+
+            print(f"Frames Processed: {n_frames}")
+            print(f"Total Runtime:    {total_time:.2f}s")
+            print(f"Avg Time/Frame:   {avg_time:.2f}s")
+            print(f"Mean Accuracy:    {avg_acc:.2%}")
+        else:
+            print("No frames were successfully processed.")
+        
+        print("="*40 + "\n")
                 
 class InferenceRunner:
     def __init__(self, engine, px_xy=0.1083, px_z=0.75):

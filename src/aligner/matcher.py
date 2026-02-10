@@ -3,6 +3,8 @@ from scipy.spatial.distance import cdist
 from scipy.optimize import linear_sum_assignment
 from typing import Tuple, Union
 from abc import ABC, abstractmethod
+from aligner.models import ReferenceFrame
+from scipy.special import logsumexp
 
 class BaseMatcher(ABC):
     @abstractmethod
@@ -65,17 +67,16 @@ class SinkhornMatcher(BaseMatcher):
         self.max_iters = max_iters
         self.stop_thr = stop_thr
         
-    def match(self, obs_coords: np.ndarray, ref_coords: np.ndarray, tau: float = 1e6, epsilon: float = None,
+    def match(self, obs_coords: np.ndarray, ref_frame: 'ReferenceFrame', tau: float = 1e6, epsilon: float = None,
               return_matrix: bool = True, **kwargs) -> Union[Tuple[np.ndarray, np.ndarray], np.ndarray]:
         """
         Versatile interface to support both Legacy and Soft-Alignment pipelines.
         Args:
             obs_coords: (N, 3) Experimental coordinates.
-            ref_coords: (M, 3) Atlas means.
             return_matrix: If True, returns (N, M) P matrix. Else returns indices.
         """
         current_eps = epsilon if epsilon is not None else self.epsilon
-        P = self.compute_P(obs_coords, ref_coords, tau=tau, epsilon=current_eps)
+        P = self.compute_P(obs_coords, ref_frame, tau=tau, epsilon=current_eps)
         
         if return_matrix:
             return P
@@ -87,36 +88,22 @@ class SinkhornMatcher(BaseMatcher):
         return row_ind, col_ind
     
     def compute_P(self, obs_coords: np.ndarray, ref_coords: np.ndarray, tau: float = 1e6, epsilon: float = None) -> np.ndarray:
-        """
-        Computes the (N, M) probability matrix using an internal (N+1, M+1) slack construction.
-        
-        Args:
-            tau: The 'rejection' cost. Points further than sqrt(tau) from 
-                 the atlas will tend to move their mass into the slack bin.
-        """
         C = cdist(obs_coords, ref_coords, metric="sqeuclidean")
         N, M = C.shape
         eps = epsilon if epsilon is not None else self.epsilon
         
-        # log space for stability
         C_aug = np.full((N + 1, M + 1), tau)
         C_aug[:N, :M] = C
         C_aug[N, M] = 0
         
-        # Log-kernel
+        # Original stable Sinkhorn (non-log space is fine for Euclidean magnitudes)
         log_K = -C_aug / eps
-        
-        # Log-scaling vectors
-        f = np.zeros(N + 1)
-        g = np.zeros(M + 1)
+        f, g = np.zeros(N + 1), np.zeros(M + 1)
         
         for _ in range(self.max_iters):
-            # Row update: f = -eps * log(sum(exp((g - C)/eps)))
-            # We use logsumexp to avoid overflow
             f_prev = f.copy()
             f = -eps * np.log(np.sum(np.exp((g[None, :] + log_K * eps) / eps), axis=1))
             g = -eps * np.log(np.sum(np.exp((f[:, None] + log_K * eps) / eps), axis=0))
-            
             if np.linalg.norm(f - f_prev) < self.stop_thr:
                 break
                 

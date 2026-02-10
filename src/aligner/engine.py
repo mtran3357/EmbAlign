@@ -259,9 +259,8 @@ class EngineV1(BaseEngine):
         """Identifies unique basins in the rotation landscape using circular distance."""
         history = []
         target_axis = ref_frame.pc1_axis
-        eps = self.settings.get('epsilon_coarse', 0.1)
         tau = self.settings.get('tau', 1e6) # High tau for coarse to prevent mass loss
-
+        n_real_atlas = ref_frame.n_real
         for sign in [+1.0, -1.0]:
             R_initial = self.transformer.get_rotation_between_vectors(sign * frame.pc1_axis, target_axis)
             n_steps = int(2 * np.pi / self.angle_step_rad)
@@ -271,17 +270,17 @@ class EngineV1(BaseEngine):
                 R_total = R_initial @ R_roll
                 
                 transformed = frame.normalized_coords @ R_total + ref_frame.center_of_mass
-                P = self.matcher.match(transformed, ref_frame.means, tau=tau, epsilon=eps, return_matrix=True)
+                # hungarian matching
+                dist_sq_mat = np.sum((transformed[:, None, :] - ref_frame.means[None, :, :])**2, axis=2)
                 
                 # Soft Euclidean Cost: sum(P_ij * ||x_i - y_j||^2)
                 dist_sq = np.sum((transformed[:, None, :] - ref_frame.means[None, :, :])**2, axis=2)
-                cost = np.sum(P * dist_sq)
+                row_ind, col_ind = linear_sum_assignment(dist_sq_mat)
+                cost = dist_sq_mat[row_ind, col_ind].sum()
 
                 history.append({
-                    'R': R_total,
-                    'sign': sign,
-                    'angle': np.degrees(i * self.angle_step_rad),
-                    'cost': cost
+                    'R': R_total, 'sign': sign,
+                    'angle': np.degrees(i * self.angle_step_rad), 'cost': cost
                 })
 
         # Peak Detection: Sort by cost and filter for unique angular valleys
