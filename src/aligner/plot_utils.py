@@ -340,80 +340,84 @@ def plot_sweep_dashboard(df, bin_size=5):
     
 
 
-
-def plot_embryo_performance(df):
+def plot_faceted_embryo_performance(df):
     """
-    Creates a 4x3 facet grid of frame accuracy over time per embryo.
+    4x3 Facet Grid with per-embryo stats and a Global Summary block 
+    in the bottom right.
     """
     df = df.copy()
-    
-    # 1. Standardize slice_match
+    # Ensure columns exist for calculations
     df['slice_match'] = df['slice_match'].fillna(False).astype(bool)
+    df['n_correct'] = (df['frame_accuracy'] * df['N_valid']).round()
     
-    # 2. Setup the FacetGrid (4x3 layout)
-    # sharex and sharey ensure all embryos are compared on the same scale
+    # 1. Setup FacetGrid (4 rows, 3 columns)
     g = sns.FacetGrid(
-        df, 
-        col="embryo_id", 
-        hue="config_name", 
-        col_wrap=3, 
-        height=4, 
-        aspect=1.4,
-        sharex=True, 
-        sharey=True
+        df, col="embryo_id", hue="config_name", col_wrap=3,
+        height=4, aspect=1.4, sharex=True, sharey=True
     )
     
-    # 3. Plotting function with embedded annotations (Acts as a local legend)
-    def plot_accuracy_with_stats(data, color, label, **kwargs):
-        # --- A. Data Prep ---
+    # 2. Internal plotting function
+    def plot_with_local_stats(data, color, label, **kwargs):
+        # Sort for clean lines
         data = data.sort_values('canonical_time')
-        x = data['canonical_time']
-        y = data['frame_accuracy']
+        x, y = data['canonical_time'], data['frame_accuracy']
         
-        # Calculate per-embryo metrics
-        avg_acc = y.mean()
-        slice_acc = data['slice_match'].mean()
-        
-        # --- B. The Visuals ---
-        # Draw the trajectory line
+        # Plotting - using the explicit plt submodule
         plt.plot(x, y, color=color, alpha=0.3, linewidth=1.5, zorder=1)
         
-        # Scatter points: high alpha for correct slice, low alpha for mismatch
         alphas = data['slice_match'].map({True: 1.0, False: 0.2}).values
-        plt.scatter(x, y, color=color, alpha=alphas, s=35, 
-                    edgecolors='white', linewidth=0.5, zorder=2)
+        plt.scatter(x, y, color=color, alpha=alphas, s=35, edgecolors='white', zorder=2)
 
-        # --- C. Facet Annotation (Replaces Global Legend) ---
+        # Per-facet local annotation
         ax = plt.gca()
         configs = list(df['config_name'].unique())
-        config_idx = configs.index(label)
+        idx = configs.index(label)
+        stat_line = f"{label}: {y.mean():.1%} Acc"
         
-        # Construct the metric string
-        stat_line = f"{label}\n Acc: {avg_acc:.1%} | Slc: {slice_acc:.1%}"
-        
-        # Stack text boxes vertically in the corner of each facet
-        ax.text(
-            0.05, 0.05 + (config_idx * 0.12), 
-            stat_line,
-            transform=ax.transAxes,
-            fontsize=8,
-            color=color,
-            weight='bold',
-            bbox=dict(facecolor='white', alpha=0.8, edgecolor='none', pad=1)
-        )
+        ax.text(0.05, 0.05 + (idx * 0.1), stat_line, transform=ax.transAxes,
+                fontsize=8, color=color, weight='bold',
+                bbox=dict(facecolor='white', alpha=0.7, edgecolor='none'))
 
-    # 4. Map the data
-    g.map_dataframe(plot_accuracy_with_stats)
+    # Map the logic
+    g.map_dataframe(plot_with_local_stats)
+
+    # 3. Calculate Global Summary Stats
+    summary_text = "GLOBAL SWEEP SUMMARY\n" + "="*21 + "\n"
+    configs = list(df['config_name'].unique())
     
-    # 5. Global Aesthetic Formatting
+    for cfg in configs:
+        c_df = df[df['config_name'] == cfg]
+        
+        avg_f_acc = c_df['frame_accuracy'].mean()
+        cell_acc = c_df['n_correct'].sum() / c_df['N_valid'].sum() if c_df['N_valid'].sum() > 0 else 0
+        slice_acc = c_df['slice_match'].mean()
+        
+        summary_text += (f"\n{cfg.upper()}\n"
+                         f"  Avg Frame:  {avg_f_acc:.1%}\n"
+                         f"  Total Cell: {cell_acc:.1%}\n"
+                         f"  Slice Hit:  {slice_acc:.1%}\n")
+
+    # 4. Place Global Summary Box
+    fig = plt.gcf()
+    fig.text(
+        0.98, 0.02, 
+        summary_text,
+        fontsize=10,
+        family='monospace',
+        color='black',
+        weight='bold',
+        ha='right', 
+        va='bottom',
+        bbox=dict(facecolor='white', alpha=0.9, edgecolor='gray', boxstyle='round,pad=0.8')
+    )
+
+    # 5. Formatting & Cleanup
     g.set_axis_labels("Canonical Time (min)", "Frame Accuracy")
     g.set_titles("Embryo: {col_name}", size=12, weight='bold')
     g.set(ylim=(-0.05, 1.05))
+    g.map(lambda **kwargs: plt.axhline(1.0, color='gray', linestyle='--', alpha=0.15))
     
-    # Add a subtle 100% horizontal guide
-    g.map(lambda **kwargs: plt.axhline(1.0, color='gray', linestyle='--', alpha=0.15, zorder=0))
+    plt.tight_layout(rect=[0, 0.05, 1, 0.95])
+    plt.close(fig) # Prevent double plotting in notebooks
     
-    # We explicitly do NOT call g.add_legend() here to keep the layout clean
-    
-    plt.tight_layout()
-    return g
+    return fig
