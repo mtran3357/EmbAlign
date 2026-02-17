@@ -276,21 +276,38 @@ def plot_sweep_dashboard(df, bin_size=5):
         add_stat_box(axes_flat[0], cfg, sns.color_palette()[i], i, f"{cfg}: {avg_f_acc:.1%} Avg", 'lower right')
 
     # --- PLOT 2: Cumulative Cell Identification (Top-Right) -> Lower Right ---
+    # --- PLOT 2 Fix: Cumulative Cell Identification ---
     ts = df.groupby(['canonical_time', 'config_name']).agg(
         min_correct=('n_correct', 'sum'), min_total=('N_valid', 'sum')
     ).reset_index()
+
     ts = ts.sort_values(['config_name', 'canonical_time']).reset_index(drop=True)
     ts['cum_correct'] = ts.groupby('config_name')['min_correct'].cumsum()
     ts['cum_total'] = ts.groupby('config_name')['min_total'].cumsum()
     ts['running_acc'] = ts['cum_correct'] / ts['cum_total']
-    
-    sns.lineplot(data=ts, x='canonical_time', y='running_acc', hue='config_name', linewidth=2.5, ax=axes_flat[1])
+
+    # 1. Create an explicit color map to ensure lines and boxes match
+    unique_configs = sorted(ts['config_name'].unique())
+    palette = sns.color_palette("tab10", n_colors=len(unique_configs))
+    color_map = dict(zip(unique_configs, palette))
+
+    # 2. Plot with the explicit palette
+    sns.lineplot(
+        data=ts, x='canonical_time', y='running_acc', 
+        hue='config_name', palette=color_map, linewidth=2.5, ax=axes_flat[1]
+    )
     axes_flat[1].set_title("Total Cumulative Cell Accuracy", fontsize=13, weight='bold')
-    
-    for i, cfg in enumerate(configs):
+
+    # 3. Annotate using the mapped colors
+    for i, cfg in enumerate(unique_configs):
         final_row = ts[ts['config_name'] == cfg].iloc[-1]
         total_cell_acc = final_row['cum_correct'] / final_row['cum_total']
-        add_stat_box(axes_flat[1], cfg, sns.color_palette()[i], i, f"{cfg}: {total_cell_acc:.1%} Total", 'lower right')
+        
+        # Use color_map[cfg] instead of palette[i] to guarantee the match
+        add_stat_box(
+            axes_flat[1], cfg, color_map[cfg], i, 
+            f"{cfg}: {total_cell_acc:.1%} Total", 'lower right'
+        )
 
     # --- PLOT 3: Alignment Cost (Bottom-Left) -> Upper Left ---
     sns.pointplot(
@@ -337,10 +354,130 @@ def plot_sweep_dashboard(df, bin_size=5):
     plt.tight_layout(rect=[0, 0.03, 1, 0.95])
     plt.close(fig)
     return fig
+
+
+def plot_sweep_dashboard(df, bin_size=5):
+    """
+    Unified 2x2 dashboard with guaranteed color consistency across all 
+    panels and annotations.
+    """
+    df = df.copy()
+    sns.set_style("whitegrid")
     
+    # --- 1. THE COLOR ANCHOR: Global Source of Truth ---
+    # We sort to ensure consistency regardless of the data structure
+    unique_configs = sorted(df['config_name'].unique())
+    # Using 'tab10' for distinct, high-contrast colors
+    palette_list = sns.color_palette("tab10", n_colors=len(unique_configs))
+    color_map = dict(zip(unique_configs, palette_list))
+    
+    # 2. Data Preparation
+    df['n_correct'] = (df['frame_accuracy'] * df['N_valid']).round()
+    df['time_bin'] = (df['canonical_time'] // bin_size) * bin_size
+    
+    fig, axes = plt.subplots(2, 2, figsize=(22, 14))
+    axes_flat = axes.flatten()
+
+    # --- HELPER: Position-Aware Annotation Logic (Sync'd to color_map) ---
+    def add_stat_box(ax, config_label, idx, text, position='lower right'):
+        color = color_map[config_label] # Pull color from master map
+        if position == 'lower right':
+            x_pos, y_pos = 0.98, 0.05 + (idx * 0.06)
+            ha = 'right'
+        else:
+            x_pos, y_pos = 0.02, 0.95 - (idx * 0.06)
+            ha = 'left'
+            
+        ax.text(
+            x_pos, y_pos, text, transform=ax.transAxes,
+            fontsize=10, color=color, weight='bold', horizontalalignment=ha,
+            bbox=dict(facecolor='white', alpha=0.8, edgecolor='none', pad=2)
+        )
+
+    # --- PLOT 1: Binned Frame Accuracy (Top-Left) ---
+    sns.pointplot(
+        data=df, x='time_bin', y='frame_accuracy', hue='config_name',
+        palette=color_map, hue_order=unique_configs, # Force Color Sync
+        join=False, dodge=0.4, errorbar=('ci', 95), capsize=0.1, 
+        markers=["o", "s", "D", "^"], ax=axes_flat[0]
+    )
+    axes_flat[0].set_title(f"Frame Accuracy (±95% CI, {bin_size}m bins)", fontsize=13, weight='bold')
+    axes_flat[0].set_ylim(-0.05, 1.05)
+    
+    for i, cfg in enumerate(unique_configs):
+        avg_f_acc = df[df['config_name'] == cfg]['frame_accuracy'].mean()
+        add_stat_box(axes_flat[0], cfg, i, f"{cfg}: {avg_f_acc:.1%} Avg", 'lower right')
+
+    # --- PLOT 2: Cumulative Accuracy (Top-Right) ---
+    ts = df.groupby(['canonical_time', 'config_name']).agg(
+        min_correct=('n_correct', 'sum'), min_total=('N_valid', 'sum')
+    ).reset_index()
+    ts = ts.sort_values(['config_name', 'canonical_time']).reset_index(drop=True)
+    ts['cum_correct'] = ts.groupby('config_name')['min_correct'].cumsum()
+    ts['cum_total'] = ts.groupby('config_name')['min_total'].cumsum()
+    ts['running_acc'] = ts['cum_correct'] / ts['cum_total']
+
+    sns.lineplot(
+        data=ts, x='canonical_time', y='running_acc', 
+        hue='config_name', palette=color_map, hue_order=unique_configs, # Force Color Sync
+        linewidth=2.5, ax=axes_flat[1]
+    )
+    axes_flat[1].set_title("Total Cumulative Cell Accuracy", fontsize=13, weight='bold')
+
+    for i, cfg in enumerate(unique_configs):
+        final_row = ts[ts['config_name'] == cfg].iloc[-1]
+        total_cell_acc = final_row['cum_correct'] / final_row['cum_total']
+        add_stat_box(axes_flat[1], cfg, i, f"{cfg}: {total_cell_acc:.1%} Total", 'lower right')
+
+    # --- PLOT 3: Alignment Cost (Bottom-Left) ---
+    sns.pointplot(
+        data=df, x='time_bin', y='total_mahalanobis_cost', hue='config_name',
+        palette=color_map, hue_order=unique_configs, # Force Color Sync
+        join=False, dodge=0.4, errorbar=('ci', 95), capsize=0.1, 
+        markers=["o", "s", "D", "^"], ax=axes_flat[2]
+    )
+    axes_flat[2].set_title("Mahalanobis Alignment Cost ($D^2$)", fontsize=13, weight='bold')
+    
+    for i, cfg in enumerate(unique_configs):
+        avg_cost = df[df['config_name'] == cfg]['total_mahalanobis_cost'].mean()
+        add_stat_box(axes_flat[2], cfg, i, f"{cfg}: Avg {avg_cost:.1f}", 'upper left')
+
+    # --- PLOT 4: Computational Load (Bottom-Right) ---
+    sns.pointplot(
+        data=df, x='time_bin', y='runtime_sec', hue='config_name',
+        palette=color_map, hue_order=unique_configs, # Force Color Sync
+        estimator="sum", join=False, dodge=0.4, errorbar=('ci', 95), 
+        capsize=0.1, markers=["o", "s", "D", "^"], ax=axes_flat[3]
+    )
+    axes_flat[3].set_title(f"Total Computational Load (Sum per {bin_size}m bin)", fontsize=13, weight='bold')
+    
+    for i, cfg in enumerate(unique_configs):
+        total_rt = df[df['config_name'] == cfg]['runtime_sec'].sum()
+        add_stat_box(axes_flat[3], cfg, i, f"{cfg}: Tot {total_rt:.1f}s", 'upper left')
+
+    # --- FINAL FORMATTING ---
+    for i, ax in enumerate(axes_flat):
+        if ax.get_legend(): ax.get_legend().remove()
+        
+        if i in [0, 2, 3]:
+            all_bins = sorted(df['time_bin'].unique())
+            labels = [int(v) if v % 20 == 0 else "" for v in all_bins]
+            ax.set_xticklabels(labels)
+        
+        ax.set_xlabel("Minutes Post-Fertilization (MPF)")
+
+    plt.suptitle("Engine Performance Sweep: Baseline vs. Topological Consensus", 
+                 fontsize=18, weight='bold', y=0.98)
+    
+    plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+    return fig
+
+# --- Execution ---
+# dashboard_fig = plot_sweep_dashboard(master_benchmark_df)
+# dashboard_fig.show()
 
 
-def plot_faceted_embryo_performance(df):
+def plot_embryo_performance(df):
     """
     4x3 Facet Grid with per-embryo stats and a Global Summary block 
     in the bottom right.
