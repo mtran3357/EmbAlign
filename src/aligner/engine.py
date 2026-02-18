@@ -336,8 +336,9 @@ class EngineV2(EngineV1):
         
     def align_frame(self, frame, trace=False):
         frame.prepare()
-        candidate_sids = slef.slice_db.get_candidates(len(frame))
+        candidate_sids = self.slice_db.get_candidates(len(frame))
         best_overall_result = None
+        landscape_traces = {} # Track traces for all slices
         k_tourn = self.settings.get('k_tournament', 3)
         tau = self.settings.get('tau', 1e6)
         
@@ -345,33 +346,36 @@ class EngineV2(EngineV1):
             state = self.hybrid_atlas.get_temporal_state(s_id, time_offset=0.5)
             if not state: continue
             
-            # Use the adapter to satisfy the ReferenceFrame interface
             adapter = GPToStaticAdapter(state['labels'], state['means'], state['variances'])
             ref_frame = ReferenceFrame(state['labels'], adapter)
             
-            # Run multi-start tournament
+            # Fix 1: Ensure _find_top_k_valleys unpacking matches its 2-value return
             valleys, coarse_history = self._find_top_k_valleys(frame, ref_frame, k=k_tourn, return_trace=trace)
             
-            for i, init in enumerate(valleys):
-                # Run Soft-ICP refinement
-                refined_R, refined_t, icp_history = self._refine_soft_icp(
-                    frame, ref_frame, init['R'], return_trace=trace
-                )
+            tournament_outcomes = []
+            for init in valleys:
+                # Fix 2: Ensure _refine_soft_icp unpacking matches its 3-value return
+                refined_R, refined_t, icp_history = self._refine_soft_icp(frame, ref_frame, init['R'], return_trace=trace)
                 
-                # Final Mahalanobis scoring
                 aligned_coords = frame.normalized_coords @ refined_R + refined_t
                 cost, assignments = self._final_mah_score(aligned_coords, ref_frame, tau=tau)
                 
-                # Log outcome
                 outcome = {
                     'slice_id': s_id, 'cost': cost, 'coords': aligned_coords,
                     'labels': [ref_frame.labels[idx] for idx in assignments]
                 }
+                tournament_outcomes.append(outcome)
                 
                 if best_overall_result is None or cost < best_overall_result['cost']:
                     best_overall_result = outcome
-            
-            return best_overall_result
+
+            if trace:
+                landscape_traces[s_id] = {'coarse': coarse_history, 'tournament': tournament_outcomes}
+        
+        # Fix 3: BatchRunner expects a 2-tuple if trace=True
+        if trace:
+            return best_overall_result, landscape_traces
+        return best_overall_result
 # class LegacyEngine:
 #     def __init__(self, atlas, slice_db, matcher, transformer, settings: dict = None):
 #         self.atlas = atlas

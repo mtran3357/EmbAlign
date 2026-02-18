@@ -470,6 +470,7 @@ def plot_sweep_dashboard(df, bin_size=5):
                  fontsize=18, weight='bold', y=0.98)
     
     plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+    plt.close(fig)
     return fig
 
 # --- Execution ---

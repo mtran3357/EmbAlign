@@ -162,11 +162,11 @@ class SliceTimeAtlas:
             t_starts, t_ends = [], []
             for lbl in labels:
                 if lbl in self.gp_atlas._interps:
-                    t_min, t_max = self.hp_atlas._interps[lbl]['t_range']
+                    t_min, t_max = self.gp_atlas._interps[lbl]['t_range']
                     t_starts.append(t_min)
                     t_ends.append(t_max)
             if t_starts: 
-                self.slice_wnidwos[s_id] = {
+                self.slice_windows[s_id] = {
                     't_range': (max(t_starts) - self.padding, min(t_ends) + self.padding),
                     'labels': labels
                 }
