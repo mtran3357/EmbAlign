@@ -3,6 +3,7 @@ import pandas as pd
 from scipy.optimize import linear_sum_assignment
 from aligner.models import ReferenceFrame
 from aligner.matcher import HungarianMatcher, SinkhornMatcher
+from aligner.atlas import SliceTimeAtlas, GPToStaticAdapter
 
 class BaseEngine:
     def __init__(self, atlas, slice_db, matcher, transformer, settings=None):
@@ -325,6 +326,52 @@ class EngineV1(BaseEngine):
             R_curr, t_curr = self.transformer.R, self.transformer.t
             
         return R_curr, t_curr, trace_data
+    
+class EngineV2(EngineV1):
+    """Coordinates sinkhorn ICP and multistart tournaments from engine v1 with time-aware reference building."""
+    def __init__(self, atlas, slice_db, matcher, transformer, settings=None):
+        super().__init__(atlas, slice_db, matcher, transformer, settings)
+        # wrap hp atlas for temporally resolved lookups
+        self.hybrid_atlas = SliceTimeAtlas(self.atlas, self.slice_db)
+        
+    def align_frame(self, frame, trace=False):
+        frame.prepare()
+        candidate_sids = slef.slice_db.get_candidates(len(frame))
+        best_overall_result = None
+        k_tourn = self.settings.get('k_tournament', 3)
+        tau = self.settings.get('tau', 1e6)
+        
+        for s_id in candidate_sids:
+            state = self.hybrid_atlas.get_temporal_state(s_id, time_offset=0.5)
+            if not state: continue
+            
+            # Use the adapter to satisfy the ReferenceFrame interface
+            adapter = GPToStaticAdapter(state['labels'], state['means'], state['variances'])
+            ref_frame = ReferenceFrame(state['labels'], adapter)
+            
+            # Run multi-start tournament
+            valleys, coarse_history = self._find_top_k_valleys(frame, ref_frame, k=k_tourn, return_trace=trace)
+            
+            for i, init in enumerate(valleys):
+                # Run Soft-ICP refinement
+                refined_R, refined_t, icp_history = self._refine_soft_icp(
+                    frame, ref_frame, init['R'], return_trace=trace
+                )
+                
+                # Final Mahalanobis scoring
+                aligned_coords = frame.normalized_coords @ refined_R + refined_t
+                cost, assignments = self._final_mah_score(aligned_coords, ref_frame, tau=tau)
+                
+                # Log outcome
+                outcome = {
+                    'slice_id': s_id, 'cost': cost, 'coords': aligned_coords,
+                    'labels': [ref_frame.labels[idx] for idx in assignments]
+                }
+                
+                if best_overall_result is None or cost < best_overall_result['cost']:
+                    best_overall_result = outcome
+            
+            return best_overall_result
 # class LegacyEngine:
 #     def __init__(self, atlas, slice_db, matcher, transformer, settings: dict = None):
 #         self.atlas = atlas
