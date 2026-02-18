@@ -112,93 +112,113 @@ class SliceAtlas:
 
 class GPTimeAtlas:
     """Time resolved atlas from GP."""
-    def __init__(self, atlas_csv_path, n_prior_csv_path = None):
-        self.df = pd.read_csv(atlas_csv_path)
-        self.n_prior= pd.read_csv(n_prior_csv_path) if n_prior_csv_path else None
-        
-        # time grid and labels
-        self.time_grid = np.sort(self.df['canonical_time'].unique())
+    def __init__(self, atlas_csv_path, n_prior_csv_path=None):
+        raw_df = pd.read_csv(atlas_csv_path)
+        # Average coordinates at duplicate timepoints to prevent interpolation errors
+        self.df = raw_df.groupby(['cell_name', 'canonical_time']).mean(numeric_only=True).reset_index()
+        self.n_prior = pd.read_csv(n_prior_csv_path) if n_prior_csv_path else None
         self.labels = self.df['cell_name'].unique()
-        
-        # interpolators
-        self._interps ={}
+        self._interps = {}
         self._build_interpolators()
         
     def _build_interpolators(self):
-        """Build standard interpolators without pre-baked tapering."""
+        """Build linear interpolators for cell means and variances."""
         for label in self.labels:
             sub = self.df[self.df['cell_name'] == label].sort_values('canonical_time')
             if len(sub) < 2: continue
-            
             t = sub['canonical_time'].values
             coords = sub[['mu_x', 'mu_y', 'mu_z']].values
             base_sigma2 = sub['sigma2_label'].values + sub['sigma2_gp'].values
-            
             self._interps[label] = {
-                'mu': interp1d(t, coords, axis=0, kind='linear', 
-                               fill_value=(coords[0], coords[-1]), bounds_error=False),
-                'sigma2': interp1d(t, base_sigma2, kind='linear', 
-                                   fill_value=(base_sigma2[0], base_sigma2[-1]), bounds_error=False),
+                'mu': interp1d(t, coords, axis=0, kind='linear', fill_value="extrapolate", bounds_error=False),
+                'sigma2': interp1d(t, base_sigma2, kind='linear', fill_value="extrapolate", bounds_error=False),
                 't_range': (t.min(), t.max())
             }
 
     def get_state(self, time, active_labels=None):
-        if active_labels is None:
-            active_labels = self.get_valid_labels(time)
-        
+        """Retrieves coordinates and variances for a specific time."""
         means, variances, labels = [], [], []
-        for lbl in active_labels:
+        target_labels = active_labels if active_labels is not None else self.labels
+        for lbl in target_labels:
             if lbl in self._interps:
-                data = self._interps[lbl]
-                t_min, t_max = data['t_range']
-                
-                # 1. Get base values from interpolation
-                mu = data['mu'](time)
-                sig2 = data['sigma2'](time)
-                
-                # 2. Dynamic Tapering: Increase variance based on distance to 'living' window
-                # If time is inside (t_min, t_max), dist_out is 0.
-                dist_out = max(0, t_min - time, time - t_max)
-                
-                # Apply an exponential or linear 'swell'
-                # 10.0 is the Ghost Cap; 2.0 is the growth rate
-                swelled_sig2 = sig2 + (dist_out * 0.18) 
-                
-                # Cap the variance so the ghost doesn't become infinite
-                final_sig2 = min(swelled_sig2, 3.0)
-                
-                means.append(mu)
-                variances.append(final_sig2)
+                d = self._interps[lbl]
+                means.append(d['mu'](time))
+                variances.append(d['sigma2'](time))
                 labels.append(lbl)
-                
         return {'labels': labels, 'means': np.array(means), 'variances': np.array(variances)}
         
-    def p_n_given_t(self, n_cells, time):
-        if self.n_prior is None:
-            return 1.0
-        
-        # find nearest existing observed time
-        idx = np.abs(self.n_prior['canonical_time'] - time).argmin()
-        closest_time = self.n_prior.iloc[idx]['canonical_time']
-        # extract prob of n
-        prob_row = self.n_prior[(self.n_prior['canonical_time'] == closest_time) & 
-                                (self.n_prior['N'] == n_cells)]
-        
-        return prob_row['P_N_given_t'].values[0] if not prob_row.empty else 1e-6
+class SliceTimeAtlas:
+    """Maps Slice Ids to their valid canonical time windows."""
+    def __init__(self, gp_atlas, slice_db, padding: float = 1.0):
+        self.gp_atlas = gp_atlas
+        self.slice_db = slice_db
+        self.padding = padding
+        self.slice_windows = {}
+        self._map_slices_to_time()
     
-    def get_valid_labels(self, time):
-        """
-        Returns all labels that are biologically active OR in a ghost state.
-        We add a 2.0 minute buffer to ensure the 'bridge' is visible.
-        """
-        valid_at_time = []
-        buffer = 2.0  # Allows ghosts to persist for 2 minutes post-division
+    def _map_slices_to_time(self):
+        """Calculates the intersection of member cell lifespans for each slice."""
+        for s_id, labels in self.slice_db.id_to_labels.items():
+            t_starts, t_ends = [], []
+            for lbl in labels:
+                if lbl in self.gp_atlas._interps:
+                    t_min, t_max = self.hp_atlas._interps[lbl]['t_range']
+                    t_starts.append(t_min)
+                    t_ends.append(t_max)
+            if t_starts: 
+                self.slice_wnidwos[s_id] = {
+                    't_range': (max(t_starts) - self.padding, min(t_ends) + self.padding),
+                    'labels': labels
+                }
+    
+    def get_temporal_state(self, s_id, time_offset=0.5):
+        """Fetches the biological geometry at a specific point in the slice window."""
+        win = self.slice_windows.get(s_id)
+        if not win: return None
+        t_start, t_end = win['t_range']
+        target_t = t_start + (t_end - t_start) * time_offset
+        return self.gp_atlas.get_state(target_t, active_labels=win['labels'])
+    
+class GPToStaticAdapter:
+    """Makes a dynamic GP state look likea. Static GaussianAtlas for legacy engine use."""
+    def __init__(self, labels, means, variances):
+        self.means = {l: m for l, m in zip(labels, means)}
+        self.covs = {l: np.eye(3) * v for l, v in zip(labels, variances)}
+        # Pre-compute inverse for Mahalanobis scoring efficiency
+        self.inv_covs = {l: np.eye(3) * (1.0 / v) for l, v in zip(labels, variances)}
         
-        for lbl, data in self._interps.items():
-            t_min, t_max = data['t_range']
-            # The new logic: Check range PLUS the ghost buffer
-            if (t_min - buffer) <= time <= (t_max + buffer):
-                valid_at_time.append(lbl)
+    def get_params(self, labels_list: List[str]) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        mus = np.array([self.means[l] for l in labels_list])
+        invs = np.array([self.inv_covs[l] for l in labels_list])
+        covs = np.array([self.covs[l] for l in labels_list])
+        return mus, invs, covs
+        
+    # def p_n_given_t(self, n_cells, time):
+    #     if self.n_prior is None:
+    #         return 1.0
+        
+    #     # find nearest existing observed time
+    #     idx = np.abs(self.n_prior['canonical_time'] - time).argmin()
+    #     closest_time = self.n_prior.iloc[idx]['canonical_time']
+    #     # extract prob of n
+    #     prob_row = self.n_prior[(self.n_prior['canonical_time'] == closest_time) & 
+    #                             (self.n_prior['N'] == n_cells)]
+        
+    #     return prob_row['P_N_given_t'].values[0] if not prob_row.empty else 1e-6
+    
+    # def get_valid_labels(self, time):
+    #     """
+    #     Returns all labels that are biologically active OR in a ghost state.
+    #     We add a 2.0 minute buffer to ensure the 'bridge' is visible.
+    #     """
+    #     valid_at_time = []
+    #     buffer = 2.0  # Allows ghosts to persist for 2 minutes post-division
+        
+    #     for lbl, data in self._interps.items():
+    #         t_min, t_max = data['t_range']
+    #         # The new logic: Check range PLUS the ghost buffer
+    #         if (t_min - buffer) <= time <= (t_max + buffer):
+    #             valid_at_time.append(lbl)
                     
-        return valid_at_time
+    #     return valid_at_time
         
