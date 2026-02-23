@@ -16,7 +16,19 @@ class BatchReporter:
         self.cell_records = []
         self.frame_records = []
         self.trace_records = []
+        self.skipped_records = []
         
+    def log_skip(self, frame, reason: str):
+        """NEW: Explicitly records frames the engine could not process."""
+        self.skipped_records.append({
+            "embryo_id": frame.embryo_id,
+            "time_idx": frame.time_idx,
+            "n_cells": len(frame),
+            "reason": reason
+        })
+        
+    
+    
     def add_result(self, frame, result, elapsed_time, atlas: "SliceAtlas", traces=None):
         """Parses engine output and frame metadata into flat records."""
 
@@ -153,6 +165,13 @@ class BatchReporter:
             on=['embryo_id', 'time_idx'],
             how='inner'
         )
+        diagnostics = pd.merge(df_frames, frame_cell_stats, on=['embryo_id', 'time_idx'], how='inner')
+
+        # NEW: Print a high-level summary of gaps in the dataset
+        total_attempted = len(self.frame_records) + len(self.skipped_records)
+        if total_attempted > 0:
+            coverage = len(self.frame_records) / total_attempted
+            print(f"Dataset Coverage: {coverage:.1%} ({len(self.frame_records)} aligned, {len(self.skipped_records)} skipped)")
         if self.full_df is not None:
             # Get columns from full_df that aren't already in diagnostics
             # We keep 'embryo_id' and 'time_idx' as our merge keys
@@ -252,7 +271,8 @@ class BatchRunner:
                 # Align
                 start_time = time.time()
                 if trace:
-                    result, landscape = self.engine.align_frame(frame, trace=True)
+                    output = self.engine.align_frame(frame, trace=True)
+                    result, landscape = output if output else (None, None)
                 else:
                     result = self.engine.align_frame(frame, trace=False)
                     landscape = None
@@ -266,9 +286,11 @@ class BatchRunner:
                         atlas=self.engine.slice_db, 
                         traces=landscape
                     )
+                else:
+                    self.reporter.log_skip(frame, reason="Missing Slice Template")
             
             except Exception as e:
-                print(f"Skipping Embryo {eid} T={tid} due to error: {e}")
+                self.reporter.log_skip(frame, reason=f"Runtime Error: {e}")
         # print run summary
         print("\n" + "="*40)
         print(" PIPELINE RESULTS SUMMARY")
