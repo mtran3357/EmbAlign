@@ -497,8 +497,8 @@ def plot_embryo_performance(df):
     # 2. Internal plotting function
     def plot_with_local_stats(data, color, label, **kwargs):
         # Sort for clean lines
-        data = data.sort_values('time_idx')
-        x, y = data['time_idx'], data['frame_accuracy']
+        data = data.sort_values('canonical_time')
+        x, y = data['canonical_time'], data['frame_accuracy']
         
         # Plotting - using the explicit plt submodule
         plt.plot(x, y, color=color, alpha=0.3, linewidth=1.5, zorder=1)
