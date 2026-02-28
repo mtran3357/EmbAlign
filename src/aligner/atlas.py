@@ -89,6 +89,7 @@ class SliceAtlas:
     def __init__(self, slice_csv_path: str):
             self.n_to_ids: Dict[int, List[int]] = {}
             self.id_to_labels: Dict[int, Tuple[str, ...]] = {}
+            self.metadata: Dict[int, Dict] = {}
             self._load_slices(slice_csv_path)
     
     def _load_slices(self, path: str) -> None:
@@ -101,6 +102,14 @@ class SliceAtlas:
                 self.n_to_ids[n] = []
             self.n_to_ids[n].append(s_id)
             self.id_to_labels[s_id] = labels
+            # Metadata for augmented slice atlas
+            self.metadata[s_id] = {
+                'is_augmented': bool(row.get('is_augmented', False)),
+                'MAP_time': float(row.get('MAP_time', np.nan)),
+                'MAP_confidence': float(row.get('MAP_confidence', np.nan)),
+                'MAP_CI_lower': float(row.get('MAP_CI_lower', np.nan)),
+                'MAP_CI_upper': float(row.get('MAP_CI_upper', np.nan))
+            }
     
     def get_candidates(self, n_cells: int) -> List[int]:
         """Returns a list of slice_ids matching the cell count."""
