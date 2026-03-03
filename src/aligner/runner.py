@@ -15,6 +15,7 @@ class BatchReporter:
         self.full_df = full_df
         self.cell_records = []
         self.frame_records = []
+        self.diag_records = []
         self.trace_records = []
         self.skipped_records = []
         
@@ -27,11 +28,19 @@ class BatchReporter:
             "reason": reason
         })
         
-    
+    def get_diagnostic_report(self):
+        """Returns the concatenated diagnostic dataframe only."""
+        if not self.diag_records:
+            return pd.DataFrame()
+        return pd.concat(self.diag_records, ignore_index=True)
     
     def add_result(self, frame, result, elapsed_time, atlas: "SliceAtlas", traces=None):
         """Parses engine output and frame metadata into flat records."""
-
+        if isinstance(result, dict) and 'diagnostics' in result:
+            diag_df = result['diagnostics'].copy()
+            diag_df['embryo_id'] = frame.embryo_id
+            diag_df['time_idx'] = frame.time_idx
+            self.diag_records.append(diag_df)
         # Metadata extraction
         eid = frame.embryo_id
         tid = frame.time_idx
@@ -110,6 +119,9 @@ class BatchReporter:
         if not self.cell_records or not self.frame_records:
             return pd.DataFrame()
         
+        if isinstance(self.cell_records[0], pd.DataFrame):
+            return pd.concat(self.cell_records, ignore_index=True)
+        
         cells = pd.DataFrame(self.cell_records)
         frames = pd.DataFrame(self.frame_records)
         
@@ -144,43 +156,99 @@ class BatchReporter:
         
         return summary.sort_values('cell_accuracy', ascending=False)
     
+    def summarize_embryo_performance(self):
+        """
+        Generates two distinct reports: 
+        1. Benchmark summary (embryo-level aggregates)
+        2. Diagnostic summary (cell-level feature DataFrame)
+        """
+        if not self.cell_records:
+            return pd.DataFrame(), pd.DataFrame()
+
+        # 1. Split mixed records by type
+        cell_dicts = [r for r in self.cell_records if isinstance(r, dict)]
+        cell_dfs = [r for r in self.cell_records if isinstance(r, pd.DataFrame)]
+
+        # 2. Process Benchmark Summary (if standard dict records exist)
+        if cell_dicts and self.frame_records:
+            cells = pd.DataFrame(cell_dicts)
+            frames = pd.DataFrame(self.frame_records)
+            
+            frames['is_perfect'] = frames['frame_accuracy'] == 1.0
+            
+            # Aggregate frame-level metrics
+            frame_summary = frames.groupby('embryo_id').agg(
+                n_frames=('time_idx', 'nunique'),
+                avg_completeness=('completeness', 'mean'),
+                avg_accuracy=('frame_accuracy', 'mean'),
+                total_unassigned=('n_unassigned', 'sum'),
+                max_N=('N_valid', 'max'),
+                avg_mahalanobis_sq=('mean_mahalanobis_sq', 'mean'),
+                mahalanobis_sq_sd=('mean_mahalanobis_sq', 'std'),
+                total_alignment_cost=('total_mahalanobis_cost', 'sum'),
+                prop_perfect_frames=('is_perfect', 'mean')
+            )
+
+            def get_macro_f1(group):
+                try: return f1_score(group['cell_name'], group['inferred_label'], average='macro')
+                except: return np.nan
+            
+            cell_summary = cells.groupby('embryo_id').agg(
+                total_cell_obs=('is_correct', 'count'),
+                cell_accuracy=('is_correct', 'mean')
+            )
+            cell_summary['f1_macro'] = cells.groupby('embryo_id').apply(get_macro_f1)
+            
+            benchmark_summary = frame_summary.join(cell_summary).reset_index()
+            benchmark_summary = benchmark_summary.sort_values('cell_accuracy', ascending=False)
+        else:
+            benchmark_summary = pd.DataFrame()
+
+        # 3. Process Diagnostic Summary (concatenate cell-level DataFrames)
+        if cell_dfs:
+            diagnostic_summary = pd.concat(cell_dfs, ignore_index=True)
+        else:
+            diagnostic_summary = pd.DataFrame()
+
+        return benchmark_summary, diagnostic_summary
+    
     def summarize_frame_diagnostics(self):
         """
-        Generates a per-frame diagnostic report for benchmarking.
+        Generates a per-frame diagnostic report strictly for benchmarking standard metrics.
         """
-        if not self.cell_records or not self.frame_records:
+        # 1. Isolate only the dictionaries (Standard Benchmark Records)
+        # This prevents diagnostic DataFrames from causing a TypeError in pd.DataFrame()
+        standard_records = [r for r in self.cell_records if isinstance(r, dict)]
+        
+        if not standard_records or not self.frame_records:
             return pd.DataFrame()
         
-        df_cells = pd.DataFrame(self.cell_records)
+        df_cells = pd.DataFrame(standard_records)
         df_frames = pd.DataFrame(self.frame_records)
         
-        # aggregate cell metrics to frame level
+        # 2. Aggregate cell metrics to frame level
         frame_cell_stats = df_cells.groupby(['embryo_id', 'time_idx']).agg(
-            # avg_sulston_lcp=('sulston_lcp', 'mean'),
             avg_lineage_score=('lineage_score', 'mean'),
         ).reset_index()
+        
+        # 3. Merge frames and cell stats
         diagnostics = pd.merge(
             df_frames,
             frame_cell_stats,
             on=['embryo_id', 'time_idx'],
             how='inner'
         )
-        diagnostics = pd.merge(df_frames, frame_cell_stats, on=['embryo_id', 'time_idx'], how='inner')
 
-        # NEW: Print a high-level summary of gaps in the dataset
+        # 4. Dataset Coverage Summary
         total_attempted = len(self.frame_records) + len(self.skipped_records)
         if total_attempted > 0:
             coverage = len(self.frame_records) / total_attempted
             print(f"Dataset Coverage: {coverage:.1%} ({len(self.frame_records)} aligned, {len(self.skipped_records)} skipped)")
+            
+        # 5. Optional metadata merge
         if self.full_df is not None:
-            # Get columns from full_df that aren't already in diagnostics
-            # We keep 'embryo_id' and 'time_idx' as our merge keys
             meta_cols = self.full_df.columns.difference(diagnostics.columns).tolist()
-            
-            # Create a clean metadata map (unique row for every frame)
             frame_meta = self.full_df[['embryo_id', 'time_idx'] + meta_cols].drop_duplicates(['embryo_id', 'time_idx'])
-            
-            # Standard Left Join: This is where 'canonical_time' enters the report
             diagnostics = pd.merge(
                 diagnostics, 
                 frame_meta, 
@@ -189,7 +257,6 @@ class BatchReporter:
             )
             
         return diagnostics.sort_values(by=['embryo_id', 'time_idx'])
-    
     def get_true_slice_id(self, frame, atlas: SliceAtlas):
         """
         Finds the slice_id in the atlas that exactly matches the frame's ground truth labels.
@@ -229,7 +296,7 @@ class BatchRunner:
         self.engine = engine
         self.reporter = reporter 
     
-    def run(self, df: pd.DataFrame, max_N: Optional[int] = None, trace: bool = False):
+    def run(self, df: pd.DataFrame, max_N: Optional[int] = None, trace: bool = False, return_diagnostics=False):
         """Groups the dataframe and processes each frame sequentially."""
         # 1. Pipeline Manifest
         print("="*40)
@@ -271,10 +338,10 @@ class BatchRunner:
                 # Align
                 start_time = time.time()
                 if trace:
-                    output = self.engine.align_frame(frame, trace=True)
+                    output = self.engine.align_frame(frame, trace=True, return_diagnostics=return_diagnostics)
                     result, landscape = output if output else (None, None)
                 else:
-                    result = self.engine.align_frame(frame, trace=False)
+                    result = self.engine.align_frame(frame, trace=False, return_diagnostics=return_diagnostics)
                     landscape = None
                 elapsed = time.time() - start_time
                 # Log 

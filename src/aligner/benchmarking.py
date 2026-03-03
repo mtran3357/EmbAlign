@@ -145,7 +145,7 @@ class BenchmarkingSuite:
         plt.show()
         return pd.DataFrame(comparison_data)
     
-    def run_sweep(self, df: pd.DataFrame, metadata_ref: pd.DataFrame = None):
+    def run_sweep(self, df: pd.DataFrame, metadata_ref: pd.DataFrame = None, return_diagnostics: bool = False):
         """Runs all registered configs across a dataset (e.g., full embryos)."""
         all_reports = []
         ref_df = metadata_ref if metadata_ref is not None else df
@@ -153,18 +153,13 @@ class BenchmarkingSuite:
         for name, engine in self.configs.items():
             reporter = BatchReporter(full_df=ref_df)
             runner = BatchRunner(engine, reporter)
-            runner.run(df)
+            runner.run(df, return_diagnostics=return_diagnostics)
             
             summary = reporter.summarize_frame_diagnostics()
-            if not summary.empty:
-                summary['config_name'] = name
-                all_reports.append(summary)
-                
-        if not all_reports:
-            print(">>> WARNING: No frames were successfully aligned. Check dataframe filtering.")
-            return pd.DataFrame()
+    
+            diag_report = reporter.get_diagnostic_report()
             
-        return pd.concat(all_reports, ignore_index=True)
+            return summary, diag_report
         
     # def add_config(self, name: str, engine_type: str = "legacy", matcher_type: str = "hungarian", settings: dict = None):
     #     """
