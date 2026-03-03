@@ -3,7 +3,7 @@ import matplotlib.pyplot as plt
 import time
 import numpy as np
 from typing import Dict, List
-from aligner.engine import LegacyEngine, EngineV1, EngineV2
+from aligner.engine import LegacyEngine, EngineV1, EngineV2, EngineV3
 from aligner.matcher import HungarianMatcher, SinkhornMatcher
 from aligner.plot_utils import SpatialVisualizer
 from aligner.runner import BatchReporter, BatchRunner
@@ -14,6 +14,14 @@ class BenchmarkingSuite:
     """
     Orchestrates comparisonsbetween different alignment ppieline configurations.
     """
+    ENGINE_REGISTRY = {
+        "legacy": LegacyEngine,
+        "v1": EngineV1,
+        "v2": EngineV2,
+        "v3": EngineV3
+    }
+    DYNAMIC_ENGINES = {"v2", "v3"}
+    
     def __init__(self, atlas, slice_db, transformer):
         self.atlas = atlas
         self.slice_db = slice_db
@@ -28,13 +36,11 @@ class BenchmarkingSuite:
         Registers a specific engine configuration for benchmarking.
         Automatically adapts dynamic GP atlases for static engines (Legacy/V1).
         """
-        settings = settings if settings is not None else {}
+        settings = settings or {}
+        base_atlas = override_atlas or self.atlas
+        active_slice_db = override_slice_db or self.slice_db
         
-        # Determine the base atlas and database to use for this config
-        base_atlas = override_atlas if override_atlas is not None else self.atlas
-        active_slice_db = override_slice_db if override_slice_db is not None else self.slice_db
-        
-        # 1. Select Matcher
+        # Select Matcher
         if matcher_type == "sinkhorn":
             matcher = SinkhornMatcher(
                 epsilon=settings.get('epsilon_coarse', 0.05),
@@ -43,28 +49,18 @@ class BenchmarkingSuite:
         else: 
             matcher = HungarianMatcher(tau=settings.get('tau_strict', 1e6))
         
-        # 2. Atlas Adaptation Logic
-        # If the engine is NOT v2 but the atlas is a GPTimeAtlas, we MUST provide a static snapshot.
+        #Atlas Adaptation Logic
         active_atlas = base_atlas
-        if engine_type != "v2" and isinstance(base_atlas, GPTimeAtlas):
-            # Take a 100-minute snapshot as the "canonical" static reference
+        if engine_type not in self.DYNAMIC_ENGINES and isinstance(base_atlas, GPTimeAtlas):
             static_state = base_atlas.get_state(100.0)
-            active_atlas = GPToStaticAdapter(
-                static_state['labels'], 
-                static_state['means'], 
-                static_state['variances']
-            )
+            active_atlas = GPToStaticAdapter(static_state['labels'], static_state['means'], static_state['variances'])
         
-        # 3. Select Engine Architecture
-        if engine_type == "v2":
-            engine = EngineV2(active_atlas, active_slice_db, matcher, self.transformer, settings)
-        elif engine_type == "v1":
-            engine = EngineV1(active_atlas, active_slice_db, matcher, self.transformer, settings)
-        else:
-            engine = LegacyEngine(active_atlas, active_slice_db, matcher, self.transformer, settings)
+        # Instantiate via Registry
+        engine_class = self.ENGINE_REGISTRY.get(engine_type, LegacyEngine)
+        engine = engine_class(active_atlas, active_slice_db, matcher, self.transformer, settings)
             
         self.configs[name] = engine
-        print(f"Added {engine_type.upper()} config: '{name}' using atlas: {active_atlas.__class__.__name__}")
+        print(f"Added {engine_type.upper()} config: '{name}'")
         
     def compare_frame(self, frame, title_prefix=""):
         """Visual comparison of all registered configs on a single frame."""
