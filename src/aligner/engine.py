@@ -397,7 +397,9 @@ class EngineV2(EngineV1):
 
 class EngineV3(EngineV2):
     def __init__(self, atlas, slice_db, matcher, transformer, settings=None):
-        # Pass arguments explicitly to the parent constructor
+        # 1. Pass diagnostic_layer to self
+        
+        
         super().__init__(
             atlas=atlas, 
             slice_db=slice_db, 
@@ -409,91 +411,25 @@ class EngineV3(EngineV2):
         self.settings.setdefault('tau', 1e6)
         self.settings.setdefault('epsilon_refine', 0.01)
         print(f"Initialized EngineV3 with atlas: {self.atlas.__class__.__name__}")
-        
-    # def align_frame(self, frame, trace=False, return_diagnostics=False):
-    #         frame.prepare()
-    #         candidate_ids = self._get_verified_candidates(len(frame))
-    #         if candidate_ids is None: return None
-            
-    #         # Metadata needed for diagnostic DataFrame
-    #         global_meta = {
-    #             'num_cells_in_frame': len(frame),
-    #             'time_idx': getattr(frame, 'time_idx', np.nan),
-    #             'embryo_id': getattr(frame, 'embryo_id', 'unknown')
-    #         }
-            
-    #         best_overall_result = None
-    #         tau = self.settings.get('tau', 1e6)
-    #         eps = self.settings.get('epsilon_refine', 0.01)
-            
-    #         for s_id in candidate_ids:
-    #             state = self.hybrid_atlas.get_temporal_state(s_id, time_offset=0.5)
-    #             if not state: continue
-                
-    #             adapter = GPToStaticAdapter(state['labels'], state['means'], state['variances'])
-    #             ref_frame = ReferenceFrame(state['labels'], adapter)
-                
-    #             valleys, _ = self._find_top_k_valleys(frame, ref_frame, k=self.settings.get('k_tournament', 3))
-                
-    #             for init in valleys:
-    #                 refined_R, refined_t, _ = self._refine_soft_icp(frame, ref_frame, init['R'])
-    #                 aligned_coords = frame.normalized_coords @ refined_R + refined_t
-                    
-    #                 # Weighted Scoring Logic
-    #                 N, M = len(aligned_coords), ref_frame.n_real
-    #                 D = np.zeros((N, M))
-    #                 for j in range(M):
-    #                     diff = aligned_coords - ref_frame.means[j]
-    #                     D[:, j] = np.einsum('ij,jk,ik->i', diff, ref_frame.inv_covs[j], diff)
-                    
-    #                 P = self.matcher.match(aligned_coords, ref_frame.means, tau=tau, epsilon=eps, return_matrix=True)
-    #                 weighted_cost = np.sum(P[:N, :M] * D)
-                    
-    #                 # Base Outcome structure
-    #                 outcome = {
-    #                     'slice_id': s_id, 
-    #                     'cost': weighted_cost, 
-    #                     'coords': aligned_coords,
-    #                     'labels': [ref_frame.labels[idx] for idx in np.argmax(P[:N, :M], axis=1)]
-    #                 }
-                    
-    #                 # Inject Diagnostics if requested
-    #                 if return_diagnostics:
-    #                     per_cell_costs = np.sum(P[:N, :M] * D, axis=1)
-    #                     entropy_vec = entropy(P[:N, :M] + 1e-12, axis=1)
-                        
-    #                     cell_df = pd.DataFrame({
-    #                         'cell_name': ref_frame.labels,
-    #                         'mah_dist': per_cell_costs,
-    #                         'entropy': entropy_vec
-    #                     })
-    #                     for col, val in global_meta.items():
-    #                         cell_df[col] = val
-                        
-    #                     outcome['diagnostics'] = cell_df
-                    
-    #                 if best_overall_result is None or outcome['cost'] < best_overall_result['cost']:
-    #                     best_overall_result = outcome
-                        
-    #         return best_overall_result
-        
-        
+    
     def align_frame(self, frame, life_history_df=None, trace=False, return_diagnostics=False):
         frame.prepare()
         candidate_ids = self._get_verified_candidates(len(frame))
         if candidate_ids is None: return None
         
-        # Metadata for diagnostic DataFrame
+        # 1. Initialize result containers
+        best_overall_result = None
+        landscape_traces = {} 
         global_meta = {
             'num_cells_in_frame': len(frame),
             'time_idx': getattr(frame, 'time_idx', np.nan),
             'embryo_id': getattr(frame, 'embryo_id', 'unknown')
         }
         
-        best_overall_result = None
         tau = self.settings.get('tau', 1e6)
         eps = self.settings.get('epsilon_refine', 0.01)
         
+        # 2. Iterate through hypotheses
         for s_id in candidate_ids:
             state = self.hybrid_atlas.get_temporal_state(s_id, time_offset=0.5)
             if not state: continue
@@ -501,13 +437,21 @@ class EngineV3(EngineV2):
             adapter = GPToStaticAdapter(state['labels'], state['means'], state['variances'])
             ref_frame = ReferenceFrame(state['labels'], adapter)
             
-            valleys, _ = self._find_top_k_valleys(frame, ref_frame, k=self.settings.get('k_tournament', 3))
+            # Capture Coarse Scan Traces
+            valleys, coarse_history = self._find_top_k_valleys(
+                frame, ref_frame, k=self.settings.get('k_tournament', 3), return_trace=trace
+            )
             
+            tournament_outcomes = []
             for init in valleys:
-                refined_R, refined_t, _ = self._refine_soft_icp(frame, ref_frame, init['R'])
+                # Capture ICP Refinement Traces
+                refined_R, refined_t, icp_history = self._refine_soft_icp(
+                    frame, ref_frame, init['R'], return_trace=trace
+                )
+                
                 aligned_coords = frame.normalized_coords @ refined_R + refined_t
                 
-                # Weighted Scoring Logic
+                # Scoring
                 N, M = len(aligned_coords), ref_frame.n_real
                 D = np.zeros((N, M))
                 for j in range(M):
@@ -517,56 +461,53 @@ class EngineV3(EngineV2):
                 P = self.matcher.match(aligned_coords, ref_frame.means, tau=tau, epsilon=eps, return_matrix=True)
                 weighted_cost = np.sum(P[:N, :M] * D)
                 
-                # Base Outcome
                 outcome = {
-                    'slice_id': s_id, 
-                    'cost': weighted_cost, 
-                    'coords': aligned_coords,
-                    'labels': [ref_frame.labels[idx] for idx in np.argmax(P[:N, :M], axis=1)]
+                    'slice_id': s_id, 'cost': weighted_cost, 'coords': aligned_coords,
+                    'labels': [ref_frame.labels[idx] for idx in np.argmax(P[:N, :M], axis=1)],
+                    'icp_history': icp_history # Save for trace
                 }
+                tournament_outcomes.append(outcome)
                 
-                # Final Selection
+                # Global winner tracking
                 if best_overall_result is None or outcome['cost'] < best_overall_result['cost']:
                     best_overall_result = outcome.copy()
-                    # Attach intermediate diagnostic data for the potential winner
-                    if return_diagnostics:
-                        best_overall_result['per_cell_costs'] = np.sum(P[:N, :M] * D, axis=1)
-                        best_overall_result['entropy'] = entropy(P[:N, :M] + 1e-12, axis=1)
+                    # Store intermediate diagnostic data for the winner
+                    best_overall_result['per_cell_costs'] = np.sum(P[:N, :M] * D, axis=1)
+                    best_overall_result['entropy'] = entropy(P[:N, :M] + 1e-12, axis=1)
 
-        # Post-selection: Enrich only the winner
-        if return_diagnostics and best_overall_result:
-            # Pull MAP metadata from slice_db
+            # Store slice landscape trace
+            if trace:
+                landscape_traces[s_id] = {'coarse': coarse_history, 'tournament': tournament_outcomes}
+
+        # 3. Post-selection: Enrich the winner
+        if best_overall_result and return_diagnostics:
             meta = self.slice_db.metadata.get(best_overall_result['slice_id'], {})
             map_t = meta.get('MAP_time', np.nan)
-            
-            # Build Diagnostic DataFrame
+            is_gen = meta.get('is_augmented', False)
             diag_df = pd.DataFrame({
                 'cell_name': [ref_frame.labels[i] for i in range(len(best_overall_result['labels']))],
                 'mah_dist': best_overall_result['per_cell_costs'],
                 'entropy': best_overall_result['entropy'],
                 'map_time': map_t,
-                'map_confidence': meta.get('MAP_confidence', np.nan),
-                'total_cost': best_overall_result['cost']
+                'frame_is_generated': is_gen
             })
             
-            # Calculate div_delta if life_history_df is provided
+            # Injection of div_delta
             if life_history_df is not None:
                 div_deltas = []
                 for lbl in diag_df['cell_name']:
-                    lh = life_history_df[life_history_df['cell_name'] == lbl]
-                    if not lh.empty:
+                    try:
+                        lh = life_history_df.loc[[str(lbl).strip()]]
                         t_b, t_d = lh['mean_birth'].iloc[0], lh['mean_division'].iloc[0]
                         div_deltas.append((map_t - t_b) / (t_d - t_b) if (t_d - t_b) > 0 else 0.0)
-                    else:
+                    except (KeyError, IndexError):
                         div_deltas.append(0.0)
                 diag_df['div_delta'] = div_deltas
-                
-            # Ground Truth comparison
-            gt_map = dict(zip(frame.valid_df['cell_name'], frame.valid_df['cell_name']))
-            diag_df['is_correct'] = diag_df['cell_name'].apply(lambda x: x == gt_map.get(x))
-            
-            # Final Metadata
+                diag_df['frame_is_generated'] = is_gen
+            # Finalize diagnostics
+            diag_df['is_correct'] = diag_df['cell_name'].apply(lambda x: x == dict(zip(frame.valid_df['cell_name'], frame.valid_df['cell_name'])).get(x))
             for col, val in global_meta.items(): diag_df[col] = val
             best_overall_result['diagnostics'] = diag_df
             
-        return best_overall_result
+        return (best_overall_result, landscape_traces) if trace else best_overall_result
+    

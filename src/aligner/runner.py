@@ -247,8 +247,16 @@ class BatchReporter:
             
         # 5. Optional metadata merge
         if self.full_df is not None:
-            meta_cols = self.full_df.columns.difference(diagnostics.columns).tolist()
-            frame_meta = self.full_df[['embryo_id', 'time_idx'] + meta_cols].drop_duplicates(['embryo_id', 'time_idx'])
+            # List of cell-level diagnostics that should not be in a frame summary
+            cell_level_cols = [
+                'cell_name', 'x_aligned', 'y_aligned', 'z_aligned', 
+                'x_um', 'y_um', 'z_um', 'valid', 'source_file'
+            ]
+            
+            # Drop the blacklisted columns and then drop duplicates
+            frame_meta = self.full_df.drop(columns=cell_level_cols, errors='ignore')
+            frame_meta = frame_meta.drop_duplicates(['embryo_id', 'time_idx'])
+            
             diagnostics = pd.merge(
                 diagnostics, 
                 frame_meta, 
@@ -296,7 +304,7 @@ class BatchRunner:
         self.engine = engine
         self.reporter = reporter 
     
-    def run(self, df: pd.DataFrame, max_N: Optional[int] = None, trace: bool = False, return_diagnostics=False):
+    def run(self, df: pd.DataFrame, life_history_df: pd.DataFrame = None, max_N: Optional[int] = None, trace: bool = False, return_diagnostics=False):
         """Groups the dataframe and processes each frame sequentially."""
         # 1. Pipeline Manifest
         print("="*40)
@@ -338,10 +346,10 @@ class BatchRunner:
                 # Align
                 start_time = time.time()
                 if trace:
-                    output = self.engine.align_frame(frame, trace=True, return_diagnostics=return_diagnostics)
+                    output = self.engine.align_frame(frame, trace=True, return_diagnostics=return_diagnostics, life_history_df = life_history_df)
                     result, landscape = output if output else (None, None)
                 else:
-                    result = self.engine.align_frame(frame, trace=False, return_diagnostics=return_diagnostics)
+                    result = self.engine.align_frame(frame, trace=False, return_diagnostics=return_diagnostics, life_history_df = life_history_df)
                     landscape = None
                 elapsed = time.time() - start_time
                 # Log 
