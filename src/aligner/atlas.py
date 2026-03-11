@@ -17,17 +17,22 @@ class StaticGaussianAtlas:
     distance calculations during alignment.
     """
     
-    def __init__(self, atlas_path: str, min_samples: int = 5, reg_eps: float = 1e-6):
-        """
-        Initializes the Atlas from a CSV file.
-        """
-        self.means: Dict[str, np.ndarray] = {}
-        self.inv_covs: Dict[str, np.ndarray] = {}
-        self.covs: Dict[str, np.ndarray] ={}
+    def __init__(self, atlas_path: str = None, min_samples: int = 5, reg_eps: float = 1e-6):
+        self.means = {}
+        self.inv_covs = {}
+        self.covs = {}
         self.reg_eps = reg_eps
         
-        df = pd.read_csv(atlas_path)
-        self._build_lookup(df, min_samples)
+        if atlas_path:
+            df = pd.read_csv(atlas_path)
+            self._build_lookup(df, min_samples)
+            
+    @classmethod
+    def from_dataframe(cls, df: pd.DataFrame, min_samples: int = 5, reg_eps: float = 1e-6):
+        """Allows initialization directly from memory."""
+        instance = cls(min_samples=min_samples, reg_eps=reg_eps)
+        instance._build_lookup(df, min_samples)
+        return instance
     
     def _build_lookup(self, df: pd.DataFrame, min_samples: int) -> None:
         """
@@ -91,59 +96,36 @@ class SliceAtlas:
     Manages the database of valid cell-type combinations (slices).
     """
     
-    def __init__(self, slice_csv_path: str):
-            self.n_to_ids: Dict[int, List[int]] = {}
-            self.id_to_labels: Dict[int, Tuple[str, ...]] = {}
-            self.metadata: Dict[int, Dict] = {}
+    def __init__(self, slice_csv_path: str = None):
+        self.n_to_ids = {}
+        self.id_to_labels = {}
+        self.metadata = {}
+        if slice_csv_path:
             self._load_slices(slice_csv_path)
-    
-    @classmethod
-    def from_dataframe(cls, df: pd.DataFrame):
-        instance = cls.__new__(cls)
-        instance.n_to_ids = {}
-        instance.id_to_labels = {}
-        instance.metadata = {}
-        
-        # Populate lookup tables from the passed dataframe
-        for _, row in df.iterrows():
-            s_id = int(row['slice_id']) if 'slice_id' in row else int(_)
-            n = int(row['n_cells_frame'])
-            labels = tuple(sorted(str(row["cell_names"]).split(";")))
-            
-            if n not in instance.n_to_ids:
-                instance.n_to_ids[n] = []
-            instance.n_to_ids[n].append(s_id)
-            instance.id_to_labels[s_id] = labels
-            
-            # Map metadata
-            instance.metadata[s_id] = {
-                'is_augmented': bool(row.get('is_augmented', False)),
-                'MAP_time': float(row.get('MAP_time', np.nan)),
-                # 'MAP_confidence': float(row.get('MAP_confidence', np.nan)),
-                # 'MAP_CI_lower': float(row.get('MAP_CI_lower', np.nan)),
-                # 'MAP_CI_upper': float(row.get('MAP_CI_upper', np.nan))
-            }
-        return instance
-    
-    def _load_slices(self, path: str) -> None:
-        df = pd.read_csv(path)
+
+    def _populate_from_df(self, df: pd.DataFrame):
+        """Centralized logic to load data from a DataFrame."""
         for _, row in df.iterrows():
             s_id = int(row['slice_id'])
             n = int(row['n_cells_frame'])
             labels = tuple(sorted(str(row["cell_names"]).split(";")))
-            if n not in self.n_to_ids:
-                self.n_to_ids[n] = []
-            self.n_to_ids[n].append(s_id)
+            
+            self.n_to_ids.setdefault(n, []).append(s_id)
             self.id_to_labels[s_id] = labels
-            # Metadata for augmented slice atlas
             self.metadata[s_id] = {
                 'is_augmented': bool(row.get('is_augmented', False)),
-                'MAP_time': float(row.get('MAP_time', np.nan)),
-                # 'MAP_confidence': float(row.get('MAP_confidence', np.nan)),
-                # 'MAP_CI_lower': float(row.get('MAP_CI_lower', np.nan)),
-                # 'MAP_CI_upper': float(row.get('MAP_CI_upper', np.nan))
+                'MAP_time': float(row.get('MAP_time', np.nan))
             }
+
+    @classmethod
+    def from_dataframe(cls, df: pd.DataFrame):
+        instance = cls()
+        instance._populate_from_df(df)
+        return instance
     
+    def _load_slices(self, path: str) -> None:
+        self._populate_from_df(pd.read_csv(path))
+        
     def get_candidates(self, n_cells: int) -> List[int]:
         """Returns a list of slice_ids matching the cell count."""
         return self.n_to_ids.get(n_cells, [])
@@ -632,3 +614,76 @@ class AtlasBuilder:
         
         std_t = np.sqrt(np.sum(posteriors * (t_grid - np.sum(posteriors * t_grid))**2))
         return map_t, labels, np.exp(-std_t / 5.0), std_t
+
+class LegacyAtlasBuilder:
+    """
+    Constructs Legacy Atlas objects directly from clean_df in-memory.
+    No CSV file writing is required for the pipeline integration.
+    """
+    def __init__(self, full_df: pd.DataFrame, min_samples: int = 10):
+        self.full_df = full_df
+        self.min_samples = min_samples
+
+    def fit(self, train_embryo_ids: List[str]) -> Tuple[StaticGaussianAtlas, SliceAtlas, GPTimeAtlas]:
+        """
+        Builds the 3 core atlas objects in-memory for legacy consumption.
+        """
+        train_df = self.full_df[self.full_df['embryo_id'].isin(train_embryo_ids)].copy()
+        
+        # 1. Build Static Gaussian Atlas
+        gauss_df = self._build_gaussian_atlas(train_df)
+        gauss_atlas = StaticGaussianAtlas.from_dataframe(gauss_df, min_samples=self.min_samples)
+        
+        # 2. Build Slice Atlas
+        # We assume your SliceAtlas.from_dataframe uses the 'slice_frequencies' format
+        _, slice_freq = self._build_slice_stats(train_df)
+        slice_atlas = SliceAtlas.from_dataframe(slice_freq)
+        
+        return gauss_atlas, slice_atlas
+
+    def _build_gaussian_atlas(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Computes lifetime-aggregated 3D Gaussian stats per cell."""
+        df = df[(df["canonical_time"] > -1) & df[["x_aligned", "y_aligned", "z_aligned"]].notna().all(axis=1)].copy()
+        centroid = df[["x_aligned", "y_aligned", "z_aligned"]].mean().values
+        rows = []
+        
+        for cell_name, g in df.groupby("cell_name"):
+            coords = g[["x_aligned", "y_aligned", "z_aligned"]].values
+            n = coords.shape[0]
+            if n < self.min_samples: continue
+            
+            mu = coords.mean(axis=0)
+            cov = np.cov(coords.T) + 1e-6 * np.eye(3)
+            
+            # Diagnostic radial/tangential projection
+            v = mu - centroid
+            norm_v = np.linalg.norm(v) or 1e-8
+            radial_dir = v / norm_v
+            r = (coords - mu) @ radial_dir
+            
+            rows.append({
+                "cell_name": cell_name, "n_samples": n,
+                "mu_x": mu[0], "mu_y": mu[1], "mu_z": mu[2],
+                "cov_xx": cov[0,0], "cov_xy": cov[0,1], "cov_xz": cov[0,2],
+                "cov_yy": cov[1,1], "cov_yz": cov[1,2], "cov_zz": cov[2,2],
+                "radial_mean": r.mean(), "radial_var": r.var(ddof=1) if n > 1 else 0,
+                "tangential_var": np.linalg.norm(coords - mu - np.outer(r, radial_dir), axis=1).var(ddof=1) if n > 1 else 0,
+                "canonical_time_mean": g["canonical_time"].mean(),
+                "canonical_time_std": g["canonical_time"].std() if n > 1 else 0,
+                "canonical_time_min": g["canonical_time"].min(),
+                "canonical_time_max": g["canonical_time"].max()
+            })
+        return pd.DataFrame(rows)
+
+    def _build_slice_stats(self, df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
+        """Aggregate frames to create slice catalog and frequency table."""
+        slice_inst = df.groupby(["embryo_id", "time_idx"]).agg(
+            cell_names=("cell_name", lambda s: ";".join(sorted(map(str, s)))),
+            n_cells_frame=("cell_name", "count")
+        ).reset_index()
+        
+        freq = slice_inst.groupby(["n_cells_frame", "cell_names"]).size().reset_index(name="count")
+        freq["p_slice_given_N"] = freq["count"] / freq.groupby("n_cells_frame")["count"].transform("sum")
+        freq["slice_id"] = freq.index
+        return slice_inst, freq
+
