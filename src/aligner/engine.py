@@ -4,7 +4,7 @@ from scipy.optimize import linear_sum_assignment
 from scipy.stats import entropy
 from aligner.models import ReferenceFrame
 from aligner.atlas import SliceTimeAtlas, GPToStaticAdapter
-from config import InitStrategy, AtlasStrategy, MatcherType
+from aligner.config import InitStrategy, AtlasStrategy, MatcherType
 
 class ModularAlignmentEngine:
     """
@@ -22,7 +22,10 @@ class ModularAlignmentEngine:
         
         # Automatically wrap GP atlases for time-resolved lookups
         if self.config.atlas_strategy == AtlasStrategy.TIME_RESOLVED:
-            self.hybrid_atlas = SliceTimeAtlas(self.atlas, self.slice_db)
+            self.hybrid_atlas = SliceTimeAtlas(
+                self.atlas, 
+                self.slice_db
+                )
         else:
             self.hybrid_atlas = None
 

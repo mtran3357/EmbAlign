@@ -9,7 +9,7 @@ import warnings
 from sklearn.exceptions import ConvergenceWarning
 
 # Import your new configuration schema
-from config import PipelineConfig, AtlasStrategy, SliceStrategy
+from aligner.config import PipelineConfig, AtlasStrategy, SliceStrategy
 
 class StaticGaussianAtlas:
     """Manages reference coordinate data derived from labeled embryos."""
@@ -252,13 +252,12 @@ class AnchoredAtlas:
 
 class AtlasFactory:
     """Master factory that orchestrates atlas construction based on the active PipelineConfig."""
-    def __init__(self, full_df: pd.DataFrame, config: PipelineConfig, min_samples: int = 5):
+    def __init__(self, full_df: pd.DataFrame, config: PipelineConfig):
         self.full_df = full_df
         self.config = config
-        self.min_samples = min_samples
-        self.min_points_gp = 4
-        self.min_count_var = 3
-        self.life_history = None
+        self.min_samples = config.min_samples_static
+        self.min_points_gp = config.min_points_gp
+        self.min_count_var = config.min_count_var
         
     def build(self, train_embryo_ids: List[str]) -> Tuple:
         """Constructs the exact Spatial and Slice atlases required by the config."""
@@ -463,7 +462,8 @@ class AtlasFactory:
         master_df['slice_id'] = master_df.index
         return master_df
     
-    def _predict_map_state(self, target_N: int, t_max: float = 250):
+    def _predict_map_state(self, target_N: int):
+        t_max = self.config.map_t_max
         t_grid = np.linspace(0, t_max, 500)
         p_exists = norm.cdf(t_grid[:, None], self.life_history['mean_birth'].values, self.life_history['std_birth'].values + 1e-6) - \
                    norm.cdf(t_grid[:, None], self.life_history['mean_division'].values, self.life_history['std_division'].values + 1e-6)
