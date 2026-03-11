@@ -27,6 +27,7 @@ class PipelineConfig:
     coarse_matcher: MatcherType = MatcherType.HUNGARIAN  
     icp_matcher: MatcherType = MatcherType.SINKHORN
     init_strategy: InitStrategy = InitStrategy.TOURNAMENT
+    use_slack: bool = True
     enable_diagnostics: bool = True
     
     # --- Hyperparameters ---
