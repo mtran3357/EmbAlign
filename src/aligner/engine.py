@@ -35,18 +35,22 @@ class ModularAlignmentEngine:
         return candidates
 
     def _final_mah_score(self, aligned_coords, ref_frame):
-        """Standard Mahalanobis scoring for the final 'Decision' phase."""
         N, M = len(aligned_coords), ref_frame.n_real
         D = np.zeros((N, M))
         for j in range(M):
             diff = aligned_coords - ref_frame.means[j]
             D[:, j] = np.einsum('ij,jk,ik->i', diff, ref_frame.inv_covs[j], diff)
         
-        C_aug = np.full((N + M, N + M), self.config.tau)
-        C_aug[:N, :M] = D
-        C_aug[N:, M:] = 0
-        row, col = linear_sum_assignment(C_aug)
-        return C_aug[np.arange(N), col[:N]].sum(), col[:N], D
+        if self.config.use_slack:
+            C_aug = np.full((N + M, N + M), self.config.tau)
+            C_aug[:N, :M] = D
+            C_aug[N:, M:] = 0
+            row, col = linear_sum_assignment(C_aug)
+            return C_aug[np.arange(N), col[:N]].sum(), col[:N], D
+        else:
+            # Strict assignment based purely on Mahalanobis distance
+            row, col = linear_sum_assignment(D)
+            return D[row, col].sum(), col, D
 
     def _coarse_scan(self, frame, ref_frame, k=1, return_trace=False):
         history = []
