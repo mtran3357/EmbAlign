@@ -51,9 +51,15 @@ class BenchmarkingSuite:
         
         #Atlas Adaptation Logic
         active_atlas = base_atlas
-        if engine_type not in self.DYNAMIC_ENGINES and isinstance(base_atlas, GPTimeAtlas):
-            static_state = base_atlas.get_state(100.0)
-            active_atlas = GPToStaticAdapter(static_state['labels'], static_state['means'], static_state['variances'])
+        if engine_type not in self.DYNAMIC_ENGINES:
+            if isinstance(base_atlas, GPTimeAtlas):
+                state = base_atlas.get_state(100.0)
+                active_atlas = GPToStaticAdapter(state['labels'], state['means'], state['variances'])
+            else:
+                # Assuming base_atlas is already a StaticGaussianAtlas
+                active_atlas = base_atlas
+        else:
+            active_atlas = base_atlas
         
         # Instantiate via Registry
         engine_class = self.ENGINE_REGISTRY.get(engine_type, LegacyEngine)
@@ -173,7 +179,11 @@ class BenchmarkingSuite:
             runner = BatchRunner(engine, reporter)
             runner.run(df, return_diagnostics=return_diagnostics, life_history_df=life_history_df)
             
-            # 1. Get reports
+            # Print immediate status after the runner finishes
+            print(f"DEBUG: After runner.run, reporter skipped {len(reporter.skipped_records)} frames.")
+            if len(reporter.skipped_records) > 0:
+                print(f"DEBUG: First skip reason: {reporter.skipped_records[0]['reason']}")
+            
             summary = reporter.summarize_frame_diagnostics()
             diag_report = reporter.get_diagnostic_report()
             
