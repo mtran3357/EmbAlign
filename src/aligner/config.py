@@ -24,7 +24,8 @@ class PipelineConfig:
     # --- Architectural Switches ---
     atlas_strategy: AtlasStrategy = AtlasStrategy.TIME_RESOLVED
     slice_strategy: SliceStrategy = SliceStrategy.AUGMENTED
-    matcher_type: MatcherType = MatcherType.SINKHORN
+    coarse_matcher: MatcherType = MatcherType.HUNGARIAN  
+    icp_matcher: MatcherType = MatcherType.SINKHORN
     init_strategy: InitStrategy = InitStrategy.TOURNAMENT
     enable_diagnostics: bool = True
     
