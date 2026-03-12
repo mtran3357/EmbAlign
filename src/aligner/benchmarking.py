@@ -41,59 +41,75 @@ class BenchmarkingSuite:
         else:
             raise ValueError(f"Unknown matcher type: {matcher_type}")
 
-    def run_sweep(self, verbose: bool = True) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    def run_sweep(self, verbose: bool = True, limit_folds: int = None) -> Tuple[pd.DataFrame, pd.DataFrame]:
         """
         Executes the Two-Pass LOOCV benchmarking sweep for all registered configs.
-        
-        Args:
-            verbose (bool): If True, prints progress bars and live evaluation summaries. 
-                            If False, runs completely silently.
+        Returns evaluated DataFrames containing positional and slice accuracies.
         """
         all_frame_results = []
         all_diagnostics = []
         
-        embryos = self.full_df['embryo_id'].unique()
+        # 1. Define the complete universe of embryos for training
+        all_embryos = self.full_df['embryo_id'].unique()
+        
+        # 2. Define the restricted list of embryos for testing
+        if limit_folds is not None:
+            test_embryos = all_embryos[:limit_folds]
+            if verbose: print(f"Testing restricted to {limit_folds} fold(s): {test_embryos}")
+        else:
+            test_embryos = all_embryos
         
         for config_name, config in self.configs.items():
             if verbose:
                 print(f"\n{'='*50}\nRunning Sweep: {config_name}\n{'='*50}")
             
-            pass1_results = {eid: [] for eid in embryos}
+            pass1_results = {eid: [] for eid in test_embryos}
             
             # ==========================================
             # PASS 1: UNBIASED ALIGNMENT
             # ==========================================
             if verbose: print("Pass 1: Leave-One-Out Alignment...")
-            for test_embryo in tqdm(embryos, desc="LOOCV Folds", disable=not verbose):
-                train_embryos = [e for e in embryos if e != test_embryo]
+            for test_embryo in tqdm(test_embryos, desc="LOOCV Folds", disable=not verbose):
                 
+                # FIX: Train on the full dataset minus the test embryo
+                train_embryos = [e for e in all_embryos if e != test_embryo]
+                
+                # Build the fresh atlas/slice DB for this fold
                 factory = AtlasFactory(self.full_df, config)
                 spatial_atlas, slice_db = factory.build(train_embryos)
                 
-                coarse_m = self._get_matcher(config.coarse_matcher, config)
-                icp_m = self._get_matcher(config.icp_matcher, config)
-                
                 engine = ModularAlignmentEngine(
-                    config=config, atlas=spatial_atlas, slice_db=slice_db,
-                    coarse_matcher=coarse_m, icp_matcher=icp_m, transformer=self.transformer
+                    config=config, 
+                    atlas=spatial_atlas, 
+                    slice_db=slice_db,
+                    coarse_matcher=self._get_matcher(config.coarse_matcher, config),
+                    icp_matcher=self._get_matcher(config.icp_matcher, config),
+                    transformer=self.transformer
                 )
                 
                 test_df = self.full_df[self.full_df['embryo_id'] == test_embryo]
                 for t_idx in test_df['time_idx'].unique():
                     try:
                         frame = EmbryoFrame.from_dataframe(self.full_df, test_embryo, t_idx)
-                        start_time = time.time()
                         result = engine.align_frame(
-                            frame, life_history_df=factory.life_history, 
+                            frame, 
+                            life_history_df=factory.life_history, 
                             return_diagnostics=config.enable_diagnostics
                         )
-                        elapsed = time.time() - start_time
                         
                         if result is not None:
-                            result.update({'config_name': config_name, 'embryo_id': test_embryo, 
-                                           'time_idx': t_idx, 'elapsed_time': elapsed})
-                            if 'diagnostics' in result:
+                            # Standardize metadata types immediately
+                            result.update({
+                                'config_name': config_name, 
+                                'embryo_id': str(test_embryo), 
+                                'time_idx': int(t_idx)
+                            })
+                            # Ensure diagnostics carry metadata for the evaluator
+                            if 'diagnostics' in result and result['diagnostics'] is not None:
                                 result['diagnostics']['config_name'] = config_name
+                                result['diagnostics']['embryo_id'] = str(test_embryo)
+                                result['diagnostics']['time_idx'] = int(t_idx)
+                            
                             pass1_results[test_embryo].append(result)
                             
                     except Exception as e:
@@ -104,9 +120,12 @@ class BenchmarkingSuite:
             # ==========================================
             if config.enable_diagnostics:
                 if verbose: print("Pass 2: Leave-One-Out Diagnostic Training...")
-                for test_embryo in tqdm(embryos, desc="Training Oracles", disable=not verbose):
-                    train_diags = [res['diagnostics'] for eid, results in pass1_results.items() 
-                                   if eid != test_embryo for res in results if 'diagnostics' in res]
+                for test_embryo in tqdm(test_embryos, desc="Training Oracles", disable=not verbose):
+                    train_diags = [
+                        res['diagnostics'] for eid, results in pass1_results.items() 
+                        if str(eid) != str(test_embryo) 
+                        for res in results if 'diagnostics' in res
+                    ]
                     
                     if train_diags:
                         oracle = DiagnosticLayer(training_data=pd.concat(train_diags, ignore_index=True))
@@ -114,45 +133,52 @@ class BenchmarkingSuite:
                             res.update(oracle.predict_confidence(res))
 
             # ==========================================
-            # AGGREGATION & LIVE REPORTING
+            # CONFIG AGGREGATION
             # ==========================================
             cfg_frame_records = []
             cfg_diag_records = []
             
             for eid, results in pass1_results.items():
                 for res in results:
-                    if 'diagnostics' in res:
-                        diag_df = res.pop('diagnostics')
-                        cfg_diag_records.append(diag_df)
-                        all_diagnostics.append(diag_df)
+                    if 'diagnostics' in res and res['diagnostics'] is not None:
+                        d_df = res.pop('diagnostics')
+                        cfg_diag_records.append(d_df)
+                        all_diagnostics.append(d_df)
                     
-                    flat_res = {k: v for k, v in res.items() if k not in ['coords', 'labels']}
+                    # Flatten result for the frame-level DataFrame
+                    flat_res = {k: v for k, v in res.items() if k not in ['coords', 'ref_frame']}
                     flat_res['num_cells_assigned'] = len(res.get('labels', []))
-                    flat_res['total_cost'] = res.get('cost', np.nan)
-                    
-                    cfg_frame_records.append(flat_res)
                     all_frame_results.append(flat_res)
-            
-            # --- The Verbose Live Evaluation Toggle ---
+                    cfg_frame_records.append(flat_res)
+
+            # --- Live Reporting Block (Optimized) ---
             if verbose and cfg_frame_records:
-                cfg_frame_df = pd.DataFrame(cfg_frame_records)
-                cfg_diag_df = pd.concat(cfg_diag_records, ignore_index=True) if cfg_diag_records else pd.DataFrame()
+                temp_frames = pd.DataFrame(cfg_frame_records)
+                temp_diags_df = pd.concat(cfg_diag_records, ignore_index=True) if cfg_diag_records else pd.DataFrame()
                 
-                eval_df = PipelineEvaluator.evaluate_benchmark(cfg_frame_df, cfg_diag_df, self.full_df)
-                
-                pos_acc = eval_df['positional_accuracy'].mean() * 100
-                slice_hit = eval_df['slice_match'].mean() * 100
-                conf = cfg_frame_df['mean_confidence'].mean() * 100 if 'mean_confidence' in cfg_frame_df.columns else float('nan')
+                # Evaluate this config specifically
+                eval_df = PipelineEvaluator.evaluate_benchmark(temp_frames, temp_diags_df, self.full_df)
                 
                 print(f"\n" + "-"*40)
                 print(f"[{config_name}] SWEEP COMPLETE")
-                print(f"Positional Accuracy:  {pos_acc:.1f}%")
-                print(f"Perfect Slice Match:  {slice_hit:.1f}%")
-                if not np.isnan(conf):
-                    print(f"Mean Oracle Confidence: {conf:.1f}%")
+                print(f"Positional Accuracy:  {eval_df['positional_accuracy'].mean()*100:.1f}%")
+                print(f"Slice Overlap (Acc):  {eval_df['slice_accuracy'].mean()*100:.1f}%")
+                print(f"Perfect Matches:      {int(eval_df['slice_match'].sum())}/{len(eval_df)}")
+                if 'mean_confidence' in temp_frames.columns:
+                    print(f"Mean Oracle Confidence: {temp_frames['mean_confidence'].mean()*100:.1f}%")
                 print("-" * 40 + "\n")
 
-        final_frame_df = pd.DataFrame(all_frame_results) if all_frame_results else pd.DataFrame()
+        # ==========================================
+        # FINAL GLOBAL EVALUATION
+        # ==========================================
+        final_frame_df = pd.DataFrame(all_frame_results)
         final_diag_df = pd.concat(all_diagnostics, ignore_index=True) if all_diagnostics else pd.DataFrame()
+        
+        if not final_frame_df.empty:
+            final_frame_df = PipelineEvaluator.evaluate_benchmark(
+                final_frame_df, 
+                final_diag_df, 
+                self.full_df
+            )
         
         return final_frame_df, final_diag_df

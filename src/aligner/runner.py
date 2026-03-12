@@ -3,69 +3,75 @@ import numpy as np
 from tqdm import tqdm
 
 class PipelineEvaluator:
-    """
-    Strictly handles the calculation of performance metrics by comparing 
-    engine predictions against ground truth labels.
-    """
-    
     @staticmethod
-    def evaluate_benchmark(frame_df: pd.DataFrame, cell_df: pd.DataFrame, full_ground_truth_df: pd.DataFrame) -> pd.DataFrame:
-        """
-        Takes the raw output from BenchmarkingSuite.run_sweep() and calculates 
-        strict frame-level and slice-level accuracy metrics.
-        """
+    def evaluate_benchmark(frame_df, cell_df, full_ground_truth_df):
         eval_records = []
         
-        # Iterate through every frame we attempted to align
-        for _, row in tqdm(frame_df.iterrows(), total=len(frame_df), desc="Calculating Metrics"):
-            eid = row['embryo_id']
-            t_idx = row['time_idx']
-            pred_labels = row.get('labels', [])
+        # 1. Type Standardization
+        for df in [frame_df, cell_df, full_ground_truth_df]:
+            if not df.empty:
+                if 'embryo_id' in df.columns:
+                    df.loc[:, 'embryo_id'] = df['embryo_id'].astype(str)
+                if 'time_idx' in df.columns:
+                    df.loc[:, 'time_idx'] = df['time_idx'].astype(int)
+
+        # 2. Build Ground Truth Lookup
+        # We strip whitespace to ensure 'ABpl ' matches 'ABpl'
+        gt_lookup = full_ground_truth_df.groupby(['embryo_id', 'time_idx'])['cell_name'].apply(
+            lambda x: set(str(c).strip() for c in x if pd.notna(c))
+        ).to_dict()
+
+        for _, row in frame_df.iterrows():
+            eid, t_idx = str(row['embryo_id']), int(row['time_idx'])
+            set_true = gt_lookup.get((eid, t_idx), set())
             
-            # 1. Fetch Ground Truth
-            gt_subset = full_ground_truth_df[
-                (full_ground_truth_df['embryo_id'] == eid) & 
-                (full_ground_truth_df['time_idx'] == t_idx) &
-                (full_ground_truth_df['valid'] == 1)
-            ]
+            # 3. Extract and Clean Predicted Labels
+            raw_pred = []
+            if 'labels' in row and isinstance(row['labels'], (list, tuple, np.ndarray)):
+                raw_pred = row['labels']
+            elif 'cell_names' in row: 
+                raw_pred = str(row['cell_names']).split(';')
             
-            if gt_subset.empty:
-                continue
-                
-            true_labels = gt_subset['cell_name'].str.strip().tolist()
-            
-            # 2. Filter out "unassigned" from predictions for slice math
-            clean_preds = [lbl for lbl in pred_labels if lbl != "unassigned"]
-            
-            set_true = set(true_labels)
-            set_pred = set(clean_preds)
+            # Clean: Remove "unassigned", strip spaces, remove NaNs
+            set_pred = set(
+                str(c).strip() for c in raw_pred 
+                if pd.notna(c) and str(c).lower() != 'unassigned'
+            )
+
+            # 4. Calculate Overlap Metrics
             intersection = set_true.intersection(set_pred)
             
-            # 3. Calculate New Slice Metrics
-            slice_match = (set_pred == set_true)
+            # This is the "Proportion of total observed cells" you requested
+            # If the engine found 19/20 correct labels, this will be 0.95
             slice_accuracy = len(intersection) / len(set_true) if len(set_true) > 0 else 0.0
             
-            # 4. Calculate Positional Accuracy (Did we put the right label on the right physical cell?)
-            # We look at the cell_df for this specific frame
-            frame_cells = cell_df[
-                (cell_df['embryo_id'] == eid) & 
-                (cell_df['time_idx'] == t_idx) &
-                (cell_df['config_name'] == row['config_name'])
-            ]
+            # Slice Match is TRUE (1.0) only if every single label matches perfectly
+            slice_match = 1.0 if slice_accuracy == 1.0 and len(set_true) == len(set_pred) else 0.0
+
+            # 5. Positional Accuracy (Cell-to-Cell)
+            positional_accuracy = 0.0
+            if not cell_df.empty and 'embryo_id' in cell_df.columns:
+                frame_cells = cell_df[
+                    (cell_df['embryo_id'] == eid) & 
+                    (cell_df['time_idx'] == t_idx) & 
+                    (cell_df['config_name'] == row['config_name'])
+                ]
+                if not frame_cells.empty and 'is_correct' in frame_cells.columns:
+                    # 'is_correct' should be pre-calculated in engine.py
+                    positional_accuracy = frame_cells['is_correct'].mean()
             
-            correct_assignments = frame_cells['is_correct'].sum() if not frame_cells.empty else 0
-            positional_accuracy = correct_assignments / len(set_true) if len(set_true) > 0 else 0.0
-            
-            # Append to final evaluation
-            eval_record = row.copy()
-            eval_record['slice_match'] = slice_match
-            eval_record['slice_accuracy'] = slice_accuracy
-            eval_record['positional_accuracy'] = positional_accuracy
-            eval_record['n_true_cells'] = len(set_true)
+            eval_record = row.to_dict()
+            eval_record.update({
+                'slice_match': slice_match,
+                'slice_accuracy': slice_accuracy,
+                'positional_accuracy': positional_accuracy,
+                'num_gt_cells': len(set_true),
+                'num_pred_cells': len(set_pred)
+            })
             eval_records.append(eval_record)
             
         return pd.DataFrame(eval_records)
-
+    
 
 class InferenceRunner:
     """

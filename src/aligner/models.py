@@ -1,6 +1,7 @@
 import pandas as pd
 import numpy as np
 from typing import List, Tuple, Any
+from scipy.spatial.distance import pdist
 
 class EmbryoFrame:
     """
@@ -38,22 +39,24 @@ class EmbryoFrame:
         if valid_subset.empty:
             raise ValueError(f"No valid data found for Embryo {embryo_id} at t={time_idx}")
             
-        coords = valid_subset[['x_aligned', 'y_aligned', 'z_aligned']].values.astype(float)
+        coords = valid_subset[['x_um', 'y_um', 'z_um']].values.astype(float)
         return cls(coords=coords, embryo_id=embryo_id, time_idx=time_idx, metadata=valid_subset)
 
     def prepare(self):
-        """
-        Centers the point cloud and calculates Principal Component axes.
-        Safe to call multiple times (lazy loading).
-        """
         if self.normalized_coords is not None:
-            return  # Already prepared
+            return
             
-        # 1. Center the coordinates
         self.center_of_mass = np.mean(self.coords, axis=0)
-        self.normalized_coords = self.coords - self.center_of_mass
+        centered = self.coords - self.center_of_mass
         
-        # 2. Compute PCA on the centered coordinates
+        # Restore the Legacy Scale Normalization
+        if len(centered) > 1:
+            med_dist = np.median(pdist(centered))
+            scale = med_dist if med_dist > 0 else 1.0
+        else:
+            scale = 1.0
+            
+        self.normalized_coords = centered / scale
         self.pc1_axis, self.pc2_axis, self.pc3_axis = self._calculate_pca(self.normalized_coords)
 
     def _calculate_pca(self, centered_coords: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:

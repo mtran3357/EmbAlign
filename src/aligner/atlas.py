@@ -133,12 +133,16 @@ class GPTimeAtlas:
     def get_state(self, time: float, active_labels: List[str] = None) -> Dict:
         means, variances, labels = [], [], []
         target_labels = active_labels if active_labels is not None else self.labels
+        
         for lbl in target_labels:
             if lbl in self._interps:
                 d = self._interps[lbl]
                 means.append(d['mu'](time))
                 variances.append(d['sigma2'](time))
                 labels.append(lbl)
+            else:
+                raise KeyError(f"Critical Error: Cell '{lbl}' missing from GP Atlas.")
+                
         return {'labels': labels, 'means': np.array(means), 'variances': np.array(variances)}
         
 class SliceTimeAtlas:
@@ -255,6 +259,7 @@ class AtlasFactory:
     def __init__(self, full_df: pd.DataFrame, config: PipelineConfig):
         self.full_df = full_df
         self.config = config
+        # self.life_history = self._build_existence_matrix(full_df)
         self.min_samples = config.min_samples_static
         self.min_points_gp = config.min_points_gp
         self.min_count_var = config.min_count_var
@@ -262,7 +267,7 @@ class AtlasFactory:
     def build(self, train_embryo_ids: List[str]) -> Tuple:
         """Constructs the exact Spatial and Slice atlases required by the config."""
         train_df = self.full_df[self.full_df['embryo_id'].isin(train_embryo_ids)].copy()
-        
+        self.life_history = self._build_existence_matrix(train_df)
         # 1. Build Spatial Geometry (Static vs GP)
         if self.config.atlas_strategy == AtlasStrategy.STATIC:
             gauss_df = self._build_static_gaussians(train_df)

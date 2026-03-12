@@ -27,7 +27,7 @@ class PipelineConfig:
     coarse_matcher: MatcherType = MatcherType.HUNGARIAN  
     icp_matcher: MatcherType = MatcherType.SINKHORN      
     init_strategy: InitStrategy = InitStrategy.TOURNAMENT
-    use_slack: bool = True          
+    use_slack: bool = False          
     enable_diagnostics: bool = True
     
     # --- Alignment Hyperparameters ---
@@ -57,8 +57,8 @@ class PipelineConfig:
             coarse_matcher=MatcherType.HUNGARIAN,  
             icp_matcher=MatcherType.HUNGARIAN,
             init_strategy=InitStrategy.SINGLE,
-            enable_diagnostics=False,
-            icp_iters=5 
+            icp_iters=5,
+            use_slack=False 
         )
 
     @classmethod
@@ -70,7 +70,6 @@ class PipelineConfig:
             coarse_matcher=MatcherType.HUNGARIAN,  
             icp_matcher=MatcherType.SINKHORN,
             init_strategy=InitStrategy.SINGLE,
-            enable_diagnostics=False
         )
 
     @classmethod
@@ -86,7 +85,6 @@ class PipelineConfig:
         """v2.0: Introduces GP Time-Resolved Atlas."""
         config = cls.v1_1_tournament()
         config.atlas_strategy = AtlasStrategy.TIME_RESOLVED
-        # Use tighter GP constraints
         config.min_points_gp = 4 
         return config
         

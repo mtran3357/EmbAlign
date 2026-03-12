@@ -55,12 +55,84 @@ class ModularAlignmentEngine:
             row, col = linear_sum_assignment(D)
             return D[row, col].sum(), col, D
 
+    # def _coarse_scan(self, frame, ref_frame, k=1, return_trace=False):
+    #     history = []
+    #     target_axis = ref_frame.pc1_axis
+        
+    #     # Setup kwargs dynamically based on the chosen coarse matcher
+    #     kwargs = {'tau': self.config.tau, 'return_matrix': True}
+    #     if self.config.coarse_matcher == MatcherType.SINKHORN:
+    #         kwargs['epsilon'] = self.config.epsilon_coarse
+            
+    #     for sign in [+1.0, -1.0]:
+    #         R_initial = self.transformer.get_rotation_between_vectors(sign * frame.pc1_axis, target_axis)
+    #         n_steps = int(2 * np.pi / self.angle_step_rad)
+            
+    #         for i in range(n_steps):
+    #             R_roll = self.transformer.get_rotation_about_axis(target_axis, i * self.angle_step_rad)
+    #             R_total = R_initial @ R_roll
+                
+    #             transformed = frame.normalized_coords @ R_total + ref_frame.center_of_mass
+    #             dist_sq_mat = np.sum((transformed[:, None, :] - ref_frame.means[None, :, :])**2, axis=2)
+                
+    #             # Get the P matrix (Binary for Hungarian, Probabilities for Sinkhorn)
+    #             P = self.coarse_matcher.match(transformed, ref_frame.means, **kwargs)
+                
+    #             # Element-wise multiplication of assignments and distances
+    #             cost = np.sum(P[:len(transformed), :ref_frame.n_real] * dist_sq_mat)
+
+    #             history.append({
+    #                 'R': R_total, 'sign': sign,
+    #                 'angle': np.degrees(i * self.angle_step_rad), 'cost': cost
+    #             })
+
+    #     sorted_h = sorted(history, key=lambda x: x['cost'])
+    #     unique_valleys = []
+    #     for entry in sorted_h:
+    #         is_new_valley = True
+    #         for v in unique_valleys:
+    #             if entry['sign'] == v['sign']:
+    #                 diff = abs(entry['angle'] - v['angle'])
+    #                 if min(diff, 360 - diff) < 60:
+    #                     is_new_valley = False
+    #                     break
+    #         if is_new_valley:
+    #             unique_valleys.append(entry)
+    #         if len(unique_valleys) >= k: break
+                        
+    #     return unique_valleys, (history if return_trace else None)
+
+    # def _refine_icp(self, frame, ref_frame, initial_R, return_trace=False):
+    #     """Weighted Kabsch ICP. Works with both Hard (Hungarian) and Soft (Sinkhorn) Matchers."""
+    #     R_curr, t_curr = initial_R, ref_frame.center_of_mass
+    #     trace_data = [] if return_trace else None
+        
+    #     # Inject Sinkhorn epsilon only if Sinkhorn is the active matcher
+    #     kwargs = {'tau': self.config.tau, 'return_matrix': True}
+    #     if self.config.icp_matcher == MatcherType.SINKHORN:
+    #         kwargs['epsilon'] = self.config.epsilon_refine
+            
+    #     for i in range(self.config.icp_iters):
+    #         current_pts = frame.normalized_coords @ R_curr + t_curr        
+    #         P = self.icp_matcher.match(current_pts, ref_frame.means, **kwargs)
+            
+    #         if return_trace:
+    #             col_ind = np.argmax(P, axis=1)
+    #             cost = np.sum((current_pts - ref_frame.means[col_ind])**2)
+    #             trace_data.append({'iter': i, 'cost': cost})
+            
+    #         # Transformer accepts both binary matrices (Hard) and probability matrices (Soft)
+    #         self.transformer.fit_weighted(frame.normalized_coords, ref_frame.means, P)
+    #         R_curr, t_curr = self.transformer.R, self.transformer.t
+            
+    #     return R_curr, t_curr, trace_data
+    
     def _coarse_scan(self, frame, ref_frame, k=1, return_trace=False):
         history = []
         target_axis = ref_frame.pc1_axis
         
-        # Setup kwargs dynamically based on the chosen coarse matcher
-        kwargs = {'tau': self.config.tau, 'return_matrix': True}
+        # FIX 2: Explicitly pass 'use_slack' to the matcher
+        kwargs = {'tau': self.config.tau, 'use_slack': self.config.use_slack, 'return_matrix': True}
         if self.config.coarse_matcher == MatcherType.SINKHORN:
             kwargs['epsilon'] = self.config.epsilon_coarse
             
@@ -75,11 +147,12 @@ class ModularAlignmentEngine:
                 transformed = frame.normalized_coords @ R_total + ref_frame.center_of_mass
                 dist_sq_mat = np.sum((transformed[:, None, :] - ref_frame.means[None, :, :])**2, axis=2)
                 
-                # Get the P matrix (Binary for Hungarian, Probabilities for Sinkhorn)
                 P = self.coarse_matcher.match(transformed, ref_frame.means, **kwargs)
                 
-                # Element-wise multiplication of assignments and distances
-                cost = np.sum(P[:len(transformed), :ref_frame.n_real] * dist_sq_mat)
+                # FIX 3: Apply the tau penalty to any probability mass dumped to slack
+                assigned_cost = np.sum(P[:len(transformed), :ref_frame.n_real] * dist_sq_mat)
+                unassigned_count = len(transformed) - np.sum(P[:len(transformed), :ref_frame.n_real])
+                cost = assigned_cost + (unassigned_count * self.config.tau)
 
                 history.append({
                     'R': R_total, 'sign': sign,
@@ -107,21 +180,20 @@ class ModularAlignmentEngine:
         R_curr, t_curr = initial_R, ref_frame.center_of_mass
         trace_data = [] if return_trace else None
         
-        # Inject Sinkhorn epsilon only if Sinkhorn is the active matcher
-        kwargs = {'tau': self.config.tau, 'return_matrix': True}
-        if self.config.matcher_type == MatcherType.SINKHORN:
+        # FIX 4: Explicitly pass 'use_slack' to the matcher
+        kwargs = {'tau': self.config.tau, 'use_slack': self.config.use_slack, 'return_matrix': True}
+        if self.config.icp_matcher == MatcherType.SINKHORN:
             kwargs['epsilon'] = self.config.epsilon_refine
             
         for i in range(self.config.icp_iters):
             current_pts = frame.normalized_coords @ R_curr + t_curr        
-            P = self.matcher.match(current_pts, ref_frame.means, **kwargs)
+            P = self.icp_matcher.match(current_pts, ref_frame.means, **kwargs)
             
             if return_trace:
                 col_ind = np.argmax(P, axis=1)
                 cost = np.sum((current_pts - ref_frame.means[col_ind])**2)
                 trace_data.append({'iter': i, 'cost': cost})
             
-            # Transformer accepts both binary matrices (Hard) and probability matrices (Soft)
             self.transformer.fit_weighted(frame.normalized_coords, ref_frame.means, P)
             R_curr, t_curr = self.transformer.R, self.transformer.t
             
@@ -169,9 +241,9 @@ class ModularAlignmentEngine:
                 
                 # Pre-compute diagnostic features if enabled
                 if self.config.enable_diagnostics:
-                    kwargs = {'tau': self.config.tau, 'return_matrix': True}
-                    if self.config.matcher_type == MatcherType.SINKHORN: kwargs['epsilon'] = self.config.epsilon_refine
-                    P = self.matcher.match(aligned_coords, ref_frame.means, **kwargs)
+                    kwargs = {'tau': self.config.tau, 'use_slack': self.config.use_slack, 'return_matrix': True}
+                    if self.config.icp_matcher == MatcherType.SINKHORN: kwargs['epsilon'] = self.config.epsilon_refine
+                    P = self.icp_matcher.match(aligned_coords, ref_frame.means, **kwargs)
                     outcome['per_cell_costs'] = np.sum(P[:len(aligned_coords), :ref_frame.n_real] * D, axis=1)
                     outcome['entropy'] = entropy(P[:len(aligned_coords), :ref_frame.n_real] + 1e-12, axis=1)
 
@@ -183,15 +255,18 @@ class ModularAlignmentEngine:
 
             if trace:
                 landscape_traces[s_id] = {'coarse': coarse_history, 'tournament': tournament_outcomes}
-
+                
         # 5. Build Diagnostics DataFrame for the Global Winner
         if best_overall_result and self.config.enable_diagnostics and return_diagnostics:
             ref_frame = best_overall_result.pop('ref_frame')
             meta = self.slice_db.metadata.get(best_overall_result['slice_id'], {})
             map_t = meta.get('MAP_time', np.nan)
             
+            # Use the ACTUAL predicted labels that were mapped to the coordinates
+            predicted_labels = best_overall_result['labels']
+            
             diag_df = pd.DataFrame({
-                'cell_name': [ref_frame.labels[i] if i < ref_frame.n_real else "unassigned" for i in range(len(best_overall_result['labels']))],
+                'cell_name': predicted_labels, 
                 'mah_dist': best_overall_result.get('per_cell_costs', np.nan),
                 'entropy': best_overall_result.get('entropy', np.nan),
                 'map_time': map_t,
@@ -212,9 +287,13 @@ class ModularAlignmentEngine:
                         div_deltas.append(0.0)
                 diag_df['div_delta'] = div_deltas
             
-            # Ground truth labeling for training the Oracle
-            gt_dict = dict(zip(frame.valid_df['cell_name'], frame.valid_df['cell_name'])) if frame.valid_df is not None else {}
-            diag_df['is_correct'] = diag_df['cell_name'].apply(lambda x: x == gt_dict.get(x, None))
+            # --- THE CRITICAL FIX: Row-by-Row Spatial Comparison ---
+            if frame.valid_df is not None and 'cell_name' in frame.valid_df.columns:
+                true_labels = frame.valid_df['cell_name'].astype(str).values
+                # Compare element-wise: Does the predicted label for coord i match the GT label for coord i?
+                diag_df['is_correct'] = (np.array(predicted_labels) == true_labels)
+            else:
+                diag_df['is_correct'] = False
             
             best_overall_result['diagnostics'] = diag_df
 
