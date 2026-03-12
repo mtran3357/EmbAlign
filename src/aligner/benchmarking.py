@@ -146,7 +146,8 @@ class BenchmarkingSuite:
                         all_diagnostics.append(d_df)
                     
                     # Flatten result for the frame-level DataFrame
-                    flat_res = {k: v for k, v in res.items() if k not in ['coords', 'ref_frame']}
+                    excluded_keys = ['coords', 'ref_frame', 'labels', 'per_cell_costs', 'entropy']
+                    flat_res = {k: v for k, v in res.items() if k not in excluded_keys}
                     flat_res['num_cells_assigned'] = len(res.get('labels', []))
                     all_frame_results.append(flat_res)
                     cfg_frame_records.append(flat_res)
@@ -162,8 +163,8 @@ class BenchmarkingSuite:
                 print(f"\n" + "-"*40)
                 print(f"[{config_name}] SWEEP COMPLETE")
                 print(f"Positional Accuracy:  {eval_df['positional_accuracy'].mean()*100:.1f}%")
-                print(f"Slice Overlap (Acc):  {eval_df['slice_accuracy'].mean()*100:.1f}%")
-                print(f"Perfect Matches:      {int(eval_df['slice_match'].sum())}/{len(eval_df)}")
+                print(f"Set Overlap (Acc):    {eval_df['set_accuracy'].mean()*100:.1f}%")
+                print(f"Perfect Set Matches:  {int(eval_df['set_match'].sum())}/{len(eval_df)}")
                 if 'mean_confidence' in temp_frames.columns:
                     print(f"Mean Oracle Confidence: {temp_frames['mean_confidence'].mean()*100:.1f}%")
                 print("-" * 40 + "\n")

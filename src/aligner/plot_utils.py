@@ -478,89 +478,6 @@ def plot_sweep_dashboard(df, bin_size=5):
 # dashboard_fig.show()
 
 
-def plot_embryo_performance(df):
-    """
-    4x3 Facet Grid with per-embryo stats and a Global Summary block 
-    in the bottom right.
-    """
-    df = df.copy()
-    # Ensure columns exist for calculations
-    df['slice_match'] = df['slice_match'].fillna(False).astype(bool)
-    df['n_correct'] = (df['frame_accuracy'] * df['N_valid']).round()
-    
-    # 1. Setup FacetGrid (4 rows, 3 columns)
-    g = sns.FacetGrid(
-        df, col="embryo_id", hue="config_name", col_wrap=3,
-        height=4, aspect=1.4, sharex=True, sharey=True
-    )
-    
-    # 2. Internal plotting function
-    def plot_with_local_stats(data, color, label, **kwargs):
-        # Sort for clean lines
-        data = data.sort_values('canonical_time')
-        x, y = data['canonical_time'], data['frame_accuracy']
-        
-        # Plotting - using the explicit plt submodule
-        plt.plot(x, y, color=color, alpha=0.3, linewidth=1.5, zorder=1)
-        
-        alphas = data['slice_match'].map({True: 1.0, False: 0.2}).values
-        plt.scatter(x, y, color=color, alpha=alphas, s=35, edgecolors='white', zorder=2)
-
-        # Per-facet local annotation
-        ax = plt.gca()
-        configs = list(df['config_name'].unique())
-        idx = configs.index(label)
-        stat_line = f"{label}: {y.mean():.1%} Acc"
-        
-        ax.text(0.05, 0.05 + (idx * 0.1), stat_line, transform=ax.transAxes,
-                fontsize=8, color=color, weight='bold',
-                bbox=dict(facecolor='white', alpha=0.7, edgecolor='none'))
-
-    # Map the logic
-    g.map_dataframe(plot_with_local_stats)
-
-    # 3. Calculate Global Summary Stats
-    summary_text = "GLOBAL SWEEP SUMMARY\n" + "="*21 + "\n"
-    configs = list(df['config_name'].unique())
-    
-    for cfg in configs:
-        c_df = df[df['config_name'] == cfg]
-        
-        avg_f_acc = c_df['frame_accuracy'].mean()
-        cell_acc = c_df['n_correct'].sum() / c_df['N_valid'].sum() if c_df['N_valid'].sum() > 0 else 0
-        slice_acc = c_df['slice_match'].mean()
-        
-        summary_text += (f"\n{cfg.upper()}\n"
-                         f"  Avg Frame:  {avg_f_acc:.1%}\n"
-                         f"  Total Cell: {cell_acc:.1%}\n"
-                         f"  Slice Hit:  {slice_acc:.1%}\n")
-
-    # 4. Place Global Summary Box
-    fig = plt.gcf()
-    fig.text(
-        0.98, 0.02, 
-        summary_text,
-        fontsize=10,
-        family='monospace',
-        color='black',
-        weight='bold',
-        ha='right', 
-        va='bottom',
-        bbox=dict(facecolor='white', alpha=0.9, edgecolor='gray', boxstyle='round,pad=0.8')
-    )
-
-    # 5. Formatting & Cleanup
-    g.set_axis_labels("Canonical Time (min)", "Frame Accuracy")
-    g.set_titles("Embryo: {col_name}", size=12, weight='bold')
-    g.set(ylim=(-0.05, 1.05))
-    g.map(lambda **kwargs: plt.axhline(1.0, color='gray', linestyle='--', alpha=0.15))
-    
-    plt.tight_layout(rect=[0, 0.05, 1, 0.95])
-    plt.close(fig) # Prevent double plotting in notebooks
-    
-    return fig
-
-
 import seaborn as sns
 import matplotlib.pyplot as plt
 
@@ -568,18 +485,18 @@ def plot_embryo_performance(df):
     """
     Facet Grid tracking Positional Accuracy over Time, with per-embryo stats 
     and a Global Summary block in the bottom right.
-    Compatible with PipelineEvaluator output.
+    Compatible with the new PipelineEvaluator output (Set Terminology).
     """
     df = df.copy()
     
-    # 1. Map to new PipelineEvaluator columns
-    # 'slice_match' is 1.0 or 0.0 in the new output, convert to bool for alpha mapping
-    df['slice_match'] = df['slice_match'].fillna(0.0).astype(bool)
+    # 1. Map to new PipelineEvaluator columns (Updated to 'set_match')
+    # 'set_match' is 1.0 or 0.0 in the new output, convert to bool for alpha mapping
+    df['set_match'] = df['set_match'].fillna(0.0).astype(bool)
     
-    # Calculate absolute correct cells using the new naming convention
+    # Calculate absolute correct cells 
     df['n_correct'] = (df['positional_accuracy'] * df['num_gt_cells']).round()
     
-    x_col = 'time_idx' 
+    x_col = 'canonical_time' 
     y_col = 'positional_accuracy'
     
     # 2. Setup FacetGrid (3 rows, 4 columns for 12 embryos)
@@ -597,8 +514,8 @@ def plot_embryo_performance(df):
         # Plotting the main line
         plt.plot(x, y, color=color, alpha=0.3, linewidth=1.5, zorder=1)
         
-        # Scatter points (Solid if slice matched perfectly, transparent if the engine guessed the wrong N/vocabulary)
-        alphas = data['slice_match'].map({True: 1.0, False: 0.2}).values
+        # Scatter points (Solid if SET matched perfectly, transparent if wrong N/vocabulary)
+        alphas = data['set_match'].map({True: 1.0, False: 0.2}).values
         plt.scatter(x, y, color=color, alpha=alphas, s=35, edgecolors='white', zorder=2)
 
         # Per-facet local annotation
@@ -623,12 +540,12 @@ def plot_embryo_performance(df):
         
         avg_f_acc = c_df[y_col].mean()
         cell_acc = c_df['n_correct'].sum() / c_df['num_gt_cells'].sum() if c_df['num_gt_cells'].sum() > 0 else 0
-        slice_acc = c_df['slice_match'].mean()
+        set_match_rate = c_df['set_match'].mean()  # Updated to use set_match
         
         summary_text += (f"\n{cfg.upper()}\n"
                          f"  Avg Frame:  {avg_f_acc:.1%}\n"
                          f"  Total Cell: {cell_acc:.1%}\n"
-                         f"  Slice Hit:  {slice_acc:.1%}\n")
+                         f"  Set Match:  {set_match_rate:.1%}\n") # Updated label
 
     # 5. Place Global Summary Box
     fig = plt.gcf()

@@ -16,7 +16,6 @@ class PipelineEvaluator:
                     df.loc[:, 'time_idx'] = df['time_idx'].astype(int)
 
         # 2. Build Ground Truth Lookup
-        # We strip whitespace to ensure 'ABpl ' matches 'ABpl'
         gt_lookup = full_ground_truth_df.groupby(['embryo_id', 'time_idx'])['cell_name'].apply(
             lambda x: set(str(c).strip() for c in x if pd.notna(c))
         ).to_dict()
@@ -25,45 +24,34 @@ class PipelineEvaluator:
             eid, t_idx = str(row['embryo_id']), int(row['time_idx'])
             set_true = gt_lookup.get((eid, t_idx), set())
             
-            # 3. Extract and Clean Predicted Labels
-            raw_pred = []
-            if 'labels' in row and isinstance(row['labels'], (list, tuple, np.ndarray)):
-                raw_pred = row['labels']
-            elif 'cell_names' in row: 
-                raw_pred = str(row['cell_names']).split(';')
+            frame_id = row.get('frame_id', f"{eid}_t{t_idx}")
             
-            # Clean: Remove "unassigned", strip spaces, remove NaNs
-            set_pred = set(
-                str(c).strip() for c in raw_pred 
-                if pd.notna(c) and str(c).lower() != 'unassigned'
-            )
-
-            # 4. Calculate Overlap Metrics
-            intersection = set_true.intersection(set_pred)
-            
-            # This is the "Proportion of total observed cells" you requested
-            # If the engine found 19/20 correct labels, this will be 0.95
-            slice_accuracy = len(intersection) / len(set_true) if len(set_true) > 0 else 0.0
-            
-            # Slice Match is TRUE (1.0) only if every single label matches perfectly
-            slice_match = 1.0 if slice_accuracy == 1.0 and len(set_true) == len(set_pred) else 0.0
-
-            # 5. Positional Accuracy (Cell-to-Cell)
+            # 3. Extract Predicted Labels dynamically from cell_df 
+            set_pred = set()
             positional_accuracy = 0.0
-            if not cell_df.empty and 'embryo_id' in cell_df.columns:
+            
+            if not cell_df.empty and 'frame_id' in cell_df.columns:
                 frame_cells = cell_df[
-                    (cell_df['embryo_id'] == eid) & 
-                    (cell_df['time_idx'] == t_idx) & 
+                    (cell_df['frame_id'] == frame_id) & 
                     (cell_df['config_name'] == row['config_name'])
                 ]
-                if not frame_cells.empty and 'is_correct' in frame_cells.columns:
-                    # 'is_correct' should be pre-calculated in engine.py
-                    positional_accuracy = frame_cells['is_correct'].mean()
+                if not frame_cells.empty:
+                    set_pred = set(
+                        str(c).strip() for c in frame_cells['cell_name'] 
+                        if pd.notna(c) and str(c).lower() != 'unassigned'
+                    )
+                    if 'is_correct' in frame_cells.columns:
+                        positional_accuracy = frame_cells['is_correct'].mean()
+
+            # 4. Calculate Overlap Metrics (Set Terminology)
+            intersection = set_true.intersection(set_pred)
+            set_accuracy = len(intersection) / len(set_true) if len(set_true) > 0 else 0.0
+            set_match = 1.0 if set_accuracy == 1.0 and len(set_true) == len(set_pred) else 0.0
             
             eval_record = row.to_dict()
             eval_record.update({
-                'slice_match': slice_match,
-                'slice_accuracy': slice_accuracy,
+                'set_match': set_match,
+                'set_accuracy': set_accuracy,
                 'positional_accuracy': positional_accuracy,
                 'num_gt_cells': len(set_true),
                 'num_pred_cells': len(set_pred)

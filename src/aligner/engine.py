@@ -5,6 +5,7 @@ from scipy.stats import entropy
 from aligner.models import ReferenceFrame
 from aligner.atlas import SliceTimeAtlas, GPToStaticAdapter
 from aligner.config import InitStrategy, AtlasStrategy, MatcherType
+import re
 
 class ModularAlignmentEngine:
     """
@@ -225,21 +226,30 @@ class ModularAlignmentEngine:
             
             tournament_outcomes = []
             for i, init in enumerate(valleys):
-                # 3. Refinement ICP (Hard or Soft based on Matcher)
                 refined_R, refined_t, icp_history = self._refine_icp(frame, ref_frame, init['R'], return_trace=trace)
                 aligned_coords = frame.normalized_coords @ refined_R + refined_t
                 
-                # 4. Final Scoring
                 cost, assignments, D = self._final_mah_score(aligned_coords, ref_frame)
-                
                 final_labels = [ref_frame.labels[idx] if idx < ref_frame.n_real else "unassigned" for idx in assignments]
                 
+                # Frame-Level Metrics
+                frame_id = f"{getattr(frame, 'embryo_id', 'unknown')}_tid{getattr(frame, 'time_idx', -1)}"
+                is_gen = self.slice_db.metadata.get(s_id, {}).get('is_augmented', False)
+                avg_cost = float(cost / len(aligned_coords)) if len(aligned_coords) > 0 else 0.0
+                
                 outcome = {
-                    'slice_id': s_id, 'cost': cost, 'coords': aligned_coords,
-                    'labels': final_labels, 'init_angle': init['angle'], 'start_rank': i + 1
+                    'frame_id': frame_id,
+                    'slice_id': s_id, 
+                    'cost': cost, 
+                    'avg_cost': avg_cost,
+                    'canonical_time': getattr(frame, 'canonical_time', np.nan),
+                    'is_generated': is_gen,
+                    'coords': aligned_coords,
+                    'labels': final_labels, 
+                    'init_angle': init['angle'], 
+                    'start_rank': i + 1
                 }
                 
-                # Pre-compute diagnostic features if enabled
                 if self.config.enable_diagnostics:
                     kwargs = {'tau': self.config.tau, 'use_slack': self.config.use_slack, 'return_matrix': True}
                     if self.config.icp_matcher == MatcherType.SINKHORN: kwargs['epsilon'] = self.config.epsilon_refine
@@ -259,21 +269,31 @@ class ModularAlignmentEngine:
         # 5. Build Diagnostics DataFrame for the Global Winner
         if best_overall_result and self.config.enable_diagnostics and return_diagnostics:
             ref_frame = best_overall_result.pop('ref_frame')
-            meta = self.slice_db.metadata.get(best_overall_result['slice_id'], {})
-            map_t = meta.get('MAP_time', np.nan)
+            map_t = self.slice_db.metadata.get(best_overall_result['slice_id'], {}).get('MAP_time', np.nan)
             
-            # Use the ACTUAL predicted labels that were mapped to the coordinates
             predicted_labels = best_overall_result['labels']
+            aligned_coords = best_overall_result['coords']
             
+            # Lineage Extractor Regex
+            def extract_lineage(name):
+                if str(name).lower() == 'unassigned': return 'unassigned'
+                m = re.match(r'^([A-Z0-9]+)', str(name))
+                return m.group(1) if m else "unknown"
+
             diag_df = pd.DataFrame({
-                'cell_name': predicted_labels, 
-                'mah_dist': best_overall_result.get('per_cell_costs', np.nan),
-                'entropy': best_overall_result.get('entropy', np.nan),
-                'map_time': map_t,
-                'frame_is_generated': meta.get('is_augmented', False),
-                'num_cells_in_frame': len(frame),
+                'frame_id': best_overall_result['frame_id'],
+                'embryo_id': getattr(frame, 'embryo_id', 'unknown'),
                 'time_idx': getattr(frame, 'time_idx', np.nan),
-                'embryo_id': getattr(frame, 'embryo_id', 'unknown')
+                'cell_name': predicted_labels, 
+                'lineage': [extract_lineage(lbl) for lbl in predicted_labels],
+                'x_aligned': aligned_coords[:, 0],
+                'y_aligned': aligned_coords[:, 1],
+                'z_aligned': aligned_coords[:, 2],
+                'mah_dist': best_overall_result.pop('per_cell_costs', np.nan),
+                'entropy': best_overall_result.pop('entropy', np.nan),
+                'map_time': map_t,
+                'frame_is_generated': best_overall_result['is_generated'],
+                'num_cells_in_frame': len(frame)
             })
             
             if life_history_df is not None:
@@ -287,10 +307,8 @@ class ModularAlignmentEngine:
                         div_deltas.append(0.0)
                 diag_df['div_delta'] = div_deltas
             
-            # --- THE CRITICAL FIX: Row-by-Row Spatial Comparison ---
             if frame.valid_df is not None and 'cell_name' in frame.valid_df.columns:
                 true_labels = frame.valid_df['cell_name'].astype(str).values
-                # Compare element-wise: Does the predicted label for coord i match the GT label for coord i?
                 diag_df['is_correct'] = (np.array(predicted_labels) == true_labels)
             else:
                 diag_df['is_correct'] = False

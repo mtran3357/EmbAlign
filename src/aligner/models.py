@@ -14,7 +14,7 @@ class EmbryoFrame:
         self.time_idx = int(time_idx)
         self.coords = coords
         self.valid_df = metadata
-        
+        self.canonical_time = np.nan
         # State placeholders populated by .prepare()
         self.normalized_coords = None
         self.center_of_mass = None
@@ -27,20 +27,25 @@ class EmbryoFrame:
     
     @classmethod
     def from_dataframe(cls, df: pd.DataFrame, embryo_id: Any, time_idx: int):
-        """Extracts a specific timepoint for a specific embryo from the main dataset."""
         subset = df[
             (df['embryo_id'].astype(str) == str(embryo_id)) & 
             (df['time_idx'].astype(int) == int(time_idx))
         ]
         
-        # Filter for valid observations
         valid_subset = subset[subset['valid'].astype(int) == 1].copy()
             
         if valid_subset.empty:
             raise ValueError(f"No valid data found for Embryo {embryo_id} at t={time_idx}")
             
         coords = valid_subset[['x_um', 'y_um', 'z_um']].values.astype(float)
-        return cls(coords=coords, embryo_id=embryo_id, time_idx=time_idx, metadata=valid_subset)
+        
+        # Initialize frame
+        frame = cls(coords=coords, embryo_id=embryo_id, time_idx=time_idx, metadata=valid_subset)
+        
+        if 'canonical_time' in valid_subset.columns:
+            frame.canonical_time = float(valid_subset['canonical_time'].iloc[0])
+            
+        return frame
 
     def prepare(self):
         if self.normalized_coords is not None:
