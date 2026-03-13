@@ -82,6 +82,31 @@ class EmbryoFrame:
                 axes.append(axis / norm)
                 
         return axes[0], axes[1], axes[2]
+    
+    @classmethod
+    def from_inference_csv(cls, filepath: str, embryo_id: str, time_idx: int, scale_xy: float, scale_z: float):
+        """
+        Ingests a raw X,Y,Z,D inference CSV and scales the coordinates to match the Atlas.
+        """
+        # 1. Read the raw data
+        raw_df = pd.read_csv(filepath)
+        
+        # Ensure column names are standardized (handle potential whitespace/case issues)
+        raw_df.columns = [c.strip().upper() for c in raw_df.columns]
+        
+        # 2. Apply scaling factors
+        coords = np.zeros((len(raw_df), 3))
+        coords[:, 0] = raw_df['X'].values * scale_xy
+        coords[:, 1] = raw_df['Y'].values * scale_xy
+        coords[:, 2] = raw_df['Z'].values * scale_z
+        
+        # 3. Initialize the frame 
+        return cls(
+            coords=coords, 
+            embryo_id=embryo_id, 
+            time_idx=time_idx, 
+            metadata=raw_df
+        )
 
 
 class ReferenceFrame:

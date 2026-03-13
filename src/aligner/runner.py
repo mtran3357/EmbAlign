@@ -65,7 +65,6 @@ class InferenceRunner:
     """
     Strictly for production use. Runs the alignment engine on NEW, unannotated 
     embryo data and saves the predicted coordinates and labels. 
-    Does zero evaluation/ground-truth checking.
     """
     def __init__(self, engine, oracle=None):
         self.engine = engine
@@ -82,27 +81,38 @@ class InferenceRunner:
                 if res is None:
                     continue
                     
-                # 2. Predict Confidence (if oracle provided)
+                # 2. Predict Confidence
                 if self.oracle:
                     res = self.oracle.predict_confidence(res)
                     
                 # 3. Format Output
-                coords = res['coords']
+                aligned_coords = res['coords']
                 labels = res['labels']
                 
+                # Fetch raw data from the frame's metadata (if it exists)
+                raw_df = getattr(frame, 'valid_df', None)
+                
                 for i in range(len(labels)):
-                    results.append({
+                    record = {
                         'embryo_id': getattr(frame, 'embryo_id', 'unknown'),
                         'time_idx': getattr(frame, 'time_idx', -1),
                         'predicted_label': labels[i],
-                        'x_aligned': coords[i, 0],
-                        'y_aligned': coords[i, 1],
-                        'z_aligned': coords[i, 2],
+                        # Original Unscaled Coordinates (for biological mapping)
+                        'raw_x': raw_df['X'].iloc[i] if raw_df is not None else np.nan,
+                        'raw_y': raw_df['Y'].iloc[i] if raw_df is not None else np.nan,
+                        'raw_z': raw_df['Z'].iloc[i] if raw_df is not None else np.nan,
+                        'raw_d': raw_df['D'].iloc[i] if raw_df is not None else np.nan,
+                        # Aligned Coordinates (for algorithm debugging/3D plotting)
+                        'x_aligned': aligned_coords[i, 0],
+                        'y_aligned': aligned_coords[i, 1],
+                        'z_aligned': aligned_coords[i, 2],
                         'confidence': res['diagnostics']['confidence_score'].iloc[i] if self.oracle else np.nan
-                    })
+                    }
+                    results.append(record)
+                    
             except Exception as e:
                 print(f"Failed to process frame {getattr(frame, 'time_idx', 'unknown')}: {e}")
                 
-        # Export to CSV for downstream biological analysis
+        # Export to CSV
         pd.DataFrame(results).to_csv(output_csv, index=False)
         print(f"Predictions saved to {output_csv}")

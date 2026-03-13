@@ -268,7 +268,7 @@ class ModularAlignmentEngine:
                 
         # 5. Build Diagnostics DataFrame for the Global Winner
         if best_overall_result and self.config.enable_diagnostics and return_diagnostics:
-            ref_frame = best_overall_result.pop('ref_frame')
+            ref_frame = best_overall_result['ref_frame']
             map_t = self.slice_db.metadata.get(best_overall_result['slice_id'], {}).get('MAP_time', np.nan)
             
             predicted_labels = best_overall_result['labels']
