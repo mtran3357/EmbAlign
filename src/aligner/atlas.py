@@ -253,6 +253,87 @@ class AnchoredAtlas:
             if not best_vector or abs(len(candidate) - target_N) < abs(len(best_vector) - target_N):
                 best_vector = candidate
         return best_vector
+    
+class AnchoredAtlas:
+    # Explicit Biological Constants 
+    ROOTS = ['ABal', 'ABar', 'ABpl', 'ABpr', 'EMS', 'P2']
+    MANUAL_DIVISIONS = {'EMS': ['E', 'MS'], 'P2': ['C', 'P3'], 'P3': ['D', 'P4'], 'P4': ['Z2', 'Z3']}
+
+    def __init__(self, lh_df: pd.DataFrame):
+        self.lh = lh_df.copy()
+        self.lh['cell_name'] = self.lh['cell_name'].str.strip()
+        self.lh = self.lh.set_index('cell_name')
+        
+        missing = [r for r in self.ROOTS if r not in self.lh.index]
+        if missing:
+            print(f"Warning: Missing roots from data: {missing}")
+            
+        self.tree = self._build_tree()
+
+    def _build_tree(self):
+        tree = {}
+        names = self.lh.index.tolist()
+        for name in names:
+            if name in self.MANUAL_DIVISIONS:
+                tree[name] = [c for c in self.MANUAL_DIVISIONS[name] if c in names]
+            children = [c for c in names if c.startswith(name) and len(c) == len(name) + 1]
+            if children:
+                tree.setdefault(name, []).extend(children)
+        return tree
+
+    def get_constrained_state(self, target_N: int, t_ref: float) -> List[str]:
+        """
+        Strictly generates a valid lineage state with EXACTLY target_N cells.
+        Divides cells one-by-one based on their life progress to mathematically 
+        prevent gaps from synchronous divisions.
+        """
+        # 1. Calculate division readiness for all cells
+        progress = {}
+        for name, row in self.lh.iterrows():
+            if pd.isna(row['mean_division']):
+                progress[name] = -999 # Terminal cells never divide
+            else:
+                progress[name] = (t_ref - row['mean_division']) / (row['std_division'] + 1e-6)
+
+        # 2. Start at the biological roots
+        active_cells = [r for r in self.ROOTS if r in self.lh.index]
+        
+        # 3. FORWARD TRAVERSAL: Divide cells one by one until we hit target_N
+        while len(active_cells) < target_N:
+            # Find all cells currently active that are capable of dividing
+            dividable = [c for c in active_cells if c in self.tree and len(self.tree[c]) > 0]
+            
+            if not dividable:
+                print(f"[Atlas Warning] Hit terminal lineage state at {len(active_cells)} cells. Cannot reach {target_N}.")
+                break
+                
+            # Pick the cell most "overdue" for division (highest life progress)
+            to_divide = max(dividable, key=lambda c: progress.get(c, -999))
+            
+            # Perform the division (removes parent, adds children)
+            active_cells.remove(to_divide)
+            active_cells.extend(self.tree[to_divide])
+            
+        # 4. BACKWARD TRAVERSAL (Safety Net): If target_N < len(ROOTS)
+        while len(active_cells) > target_N:
+            # Find all sets of active children that share a parent
+            parents_of_active = {}
+            for parent, children in self.tree.items():
+                if all(c in active_cells for c in children):
+                    parents_of_active[parent] = children
+                    
+            if not parents_of_active:
+                break
+                
+            # Pick the parent that divided MOST RECENTLY (lowest progress) to merge back
+            to_merge = min(parents_of_active.keys(), key=lambda p: progress.get(p, 999))
+            
+            # Perform the merge (remove children, add parent)
+            for child in parents_of_active[to_merge]:
+                active_cells.remove(child)
+            active_cells.append(to_merge)
+
+        return active_cells
 
 class AtlasFactory:
     """Master factory that orchestrates atlas construction based on the active PipelineConfig."""

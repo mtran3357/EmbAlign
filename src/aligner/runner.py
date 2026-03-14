@@ -69,6 +69,56 @@ class InferenceRunner:
     def __init__(self, engine, oracle=None):
         self.engine = engine
         self.oracle = oracle
+    
+    def run_for_report(self, unannotated_frames: list):
+        """
+        Executes alignment with full optimization tracing enabled. 
+        Scores every single local minimum across all candidate slices with the Oracle.
+        Returns the rich data structures required by the HTML Report Builder.
+        """
+        all_reports_data = []
+        
+        for frame in tqdm(unannotated_frames, desc="Generating Trace Data"):
+            try:
+                # 1. Run Alignment with full tracing activated
+                best_res, landscape = self.engine.align_frame(
+                    frame, 
+                    trace=True, 
+                    return_diagnostics=True
+                )
+                
+                if best_res is None:
+                    continue
+                    
+                # 2. Score the entire optimization landscape using the Oracle
+                if self.oracle:
+                    # Score the global winner
+                    best_res = self.oracle.predict_confidence(best_res)
+                    
+                    # Score every local minimum evaluated in the tournament
+                    for s_id, trace_data in landscape.items():
+                        for outcome in trace_data['tournament']:
+                            # Because we updated engine.py, 'outcome' now contains 
+                            # the required 'diagnostics' DataFrame for the Oracle.
+                            self.oracle.predict_confidence(outcome)
+                            
+                # 3. Package the data for the HTML Builder
+                report_package = {
+                    'embryo_id': getattr(frame, 'embryo_id', 'unknown'),
+                    'time_idx': getattr(frame, 'time_idx', -1),
+                    'canonical_time': getattr(frame, 'canonical_time', np.nan),
+                    'num_cells': len(frame),
+                    'best_result': best_res,
+                    'landscape': landscape,
+                    'raw_df': getattr(frame, 'valid_df', None)
+                }
+                
+                all_reports_data.append(report_package)
+                
+            except Exception as e:
+                print(f"Failed to generate trace for frame {getattr(frame, 'time_idx', 'unknown')}: {e}")
+                
+        return all_reports_data
         
     def annotate_dataset(self, unannotated_frames: list, output_csv: str):
         """Processes a list of EmbryoFrames and exports the predictions."""
@@ -116,3 +166,5 @@ class InferenceRunner:
         # Export to CSV
         pd.DataFrame(results).to_csv(output_csv, index=False)
         print(f"Predictions saved to {output_csv}")
+        
+    

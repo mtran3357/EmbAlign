@@ -15,7 +15,7 @@ from aligner.runner import InferenceRunner
 # 1. CONFIGURATION & PATHS
 # ==========================================
 MODEL_DIR = "production_models"
-INPUT_DIR = "inference_data"    # Folder containing your raw X,Y,Z,D CSVs
+INPUT_DIR = "inference_data_v2"    # Folder containing your raw X,Y,Z,D CSVs
 OUTPUT_FILE = "final_inference_predictions.csv"
 
 # Microscope Scaling Factors (from your earlier context)

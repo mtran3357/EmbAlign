@@ -109,416 +109,47 @@ class SpatialVisualizer:
         z = np.outer(np.ones_like(u), np.cos(v))
         ellipsoid = np.stack((x, y, z), axis=-1) @ (vecs @ np.diag(vals)).T + center
         return ellipsoid[:,:,0], ellipsoid[:,:,1], ellipsoid[:,:,2]
-    
-# Benchmark visualization
-
-def plot_sweep_dashboard(df, bin_size=5):
-    """
-    Unified 2x2 dashboard for alignment performance.
-    
-    Parameters:
-    - df: The result dataframe from the BenchmarkingSuite.
-    - bin_size: The temporal width (in minutes) for the checkpoint plots.
-    """
-    df = df.copy()
-    sns.set_style("whitegrid")
-    
-    # 1. Data Preparation
-    # Reconstruct 'n_correct' for the cumulative calculations
-    df['n_correct'] = (df['frame_accuracy'] * df['N_valid']).round()
-    df['time_bin'] = (df['canonical_time'] // bin_size) * bin_size
-    
-    # Initialize the 2x2 Figure
-    # We disable sharex because the top-right plot is continuous (raw time)
-    # while the others are binned (categorical time).
-    fig, axes = plt.subplots(2, 2, figsize=(22, 12))
-    axes_flat = axes.flatten()
-
-    # --- PLOT 1: Binned Frame Accuracy (Top-Left) ---
-    sns.pointplot(
-        data=df, x='time_bin', y='frame_accuracy', hue='config_name',
-        join=False, dodge=0.4, errorbar=('ci', 95), capsize=0.1, 
-        markers=["o", "s", "D", "^"], ax=axes_flat[0]
-    )
-    axes_flat[0].set_title(f"Frame Accuracy Checkpoints (±95% CI, {bin_size}m bins)", fontsize=13, weight='bold')
-    axes_flat[0].set_ylabel("Mean Accuracy")
-    axes_flat[0].set_ylim(-0.05, 1.05)
-
-    # --- PLOT 2: Cumulative Cell Identification (Top-Right) ---
-    # Aggregate correct counts per minute across all embryos
-    ts = df.groupby(['canonical_time', 'config_name']).agg(
-        min_correct=('n_correct', 'sum'), 
-        min_total=('N_valid', 'sum')
-    ).reset_index()
-    
-    # Ensure strict sorting for cumsum
-    ts = ts.sort_values(['config_name', 'canonical_time']).reset_index(drop=True)
-    
-    # Running sums calculated strictly within each config group
-    ts['cum_correct'] = ts.groupby('config_name')['min_correct'].cumsum()
-    ts['cum_total'] = ts.groupby('config_name')['min_total'].cumsum()
-    ts['running_acc'] = ts['cum_correct'] / ts['cum_total']
-    
-    sns.lineplot(
-        data=ts, x='canonical_time', y='running_acc', 
-        hue='config_name', linewidth=2.5, ax=axes_flat[1]
-    )
-    axes_flat[1].set_title("Cumulative Lineage Recovery (Running Sum)", fontsize=13, weight='bold')
-    axes_flat[1].set_ylabel("Total Correct / Total Seen")
-    axes_flat[1].set_ylim(ts['running_acc'].min() - 0.05, 1.02)
-
-    # --- PLOT 3: Alignment Cost (Bottom-Left) ---
-    sns.pointplot(
-        data=df, x='time_bin', y='total_mahalanobis_cost', hue='config_name',
-        join=False, dodge=0.4, errorbar=('ci', 95), capsize=0.1, 
-        markers=["o", "s", "D", "^"], ax=axes_flat[2]
-    )
-    axes_flat[2].set_title("Mahalanobis Alignment Cost ($D^2$)", fontsize=13, weight='bold')
-    axes_flat[2].set_ylabel("Mean Cost")
-
-    # --- PLOT 4: Computational Load (Bottom-Right) ---
-    sns.pointplot(
-        data=df, x='time_bin', y='runtime_sec', hue='config_name',
-        estimator="sum", join=False, dodge=0.4, errorbar=('ci', 95), 
-        capsize=0.1, markers=["o", "s", "D", "^"], ax=axes_flat[3]
-    )
-    axes_flat[3].set_title(f"Total Computational Load (Sum per {bin_size}m bin)", fontsize=13, weight='bold')
-    axes_flat[3].set_ylabel("Total Execution Time (s)")
-
-    # --- FINAL FORMATTING ---
-    for i, ax in enumerate(axes_flat):
-        # Remove individual legends to avoid clutter
-        if ax.get_legend():
-            ax.get_legend().remove()
-        
-        # Clean X-Axis Ticks: Label only every 20 MPF for binned plots
-        if i in [0, 2, 3]:
-            all_bins = sorted(df['time_bin'].unique())
-            # Map tick positions to labels, showing only multiples of 20
-            labels = [int(v) if v % 20 == 0 else "" for v in all_bins]
-            ax.set_xticklabels(labels)
-        
-        ax.set_xlabel("Minutes Post-Fertilization (MPF)")
-
-    # Create one global unified legend
-    handles, labels = axes_flat[0].get_legend_handles_labels()
-    fig.legend(
-        handles, labels, loc='center right', title="Pipeline Configs", 
-        bbox_to_anchor=(1.12, 0.5), frameon=True, shadow=True, fontsize=11
-    )
-
-    plt.suptitle("Engine Performance Sweep: Baseline vs. Topological Consensus", 
-                 fontsize=18, weight='bold', y=0.98)
-    
-    plt.tight_layout(rect=[0, 0.03, 1, 0.95])
-    return fig
 
 import matplotlib.pyplot as plt
 import seaborn as sns
-import pandas as pd
-import numpy as np
 
-import matplotlib.pyplot as plt
-import seaborn as sns
-import pandas as pd
-import numpy as np
+VERSION_PALETTE = {
+    "V0.0": "#9b59b6",  # Purple
+    "V1.0": "#e74c3c",  # Red
+    "V1.1": "#2ecc71",  # Green
+    "V2.0": "#f39c12",  # Orange
+    "V2.1": "#3498db",  # Blue
+    #"V3.0": "#34495e"   # Dark Gray
+}
 
-def plot_sweep_dashboard(df, bin_size=5):
+def plot_embryo_performance(df, palette=VERSION_PALETTE):
     """
-    Unified 2x2 dashboard with specifically positioned color-coded annotations.
-    - Top Row: Lower Right
-    - Bottom Row: Upper Left
-    """
-    df = df.copy()
-    sns.set_style("whitegrid")
-    
-    # 1. Data Preparation
-    df['n_correct'] = (df['frame_accuracy'] * df['N_valid']).round()
-    df['time_bin'] = (df['canonical_time'] // bin_size) * bin_size
-    configs = list(df['config_name'].unique())
-    
-    fig, axes = plt.subplots(2, 2, figsize=(22, 14))
-    axes_flat = axes.flatten()
-
-    # --- HELPER: Position-Aware Annotation Logic ---
-    def add_stat_box(ax, config_label, color, idx, text, position='lower right'):
-        if position == 'lower right':
-            # Stack upwards from bottom right
-            x_pos, y_pos = 0.98, 0.05 + (idx * 0.06)
-            ha = 'right'
-        else:
-            # Stack downwards from top left
-            x_pos, y_pos = 0.02, 0.95 - (idx * 0.06)
-            ha = 'left'
-            
-        ax.text(
-            x_pos, y_pos, 
-            text,
-            transform=ax.transAxes,
-            fontsize=10,
-            color=color,
-            weight='bold',
-            horizontalalignment=ha,
-            bbox=dict(facecolor='white', alpha=0.8, edgecolor='none', pad=2)
-        )
-
-    # --- PLOT 1: Binned Frame Accuracy (Top-Left) -> Lower Right ---
-    sns.pointplot(
-        data=df, x='time_bin', y='frame_accuracy', hue='config_name',
-        join=False, dodge=0.4, errorbar=('ci', 95), capsize=0.1, 
-        markers=["o", "s", "D", "^"], ax=axes_flat[0]
-    )
-    axes_flat[0].set_title(f"Frame Accuracy (±95% CI, {bin_size}m bins)", fontsize=13, weight='bold')
-    axes_flat[0].set_ylim(-0.05, 1.05)
-    
-    for i, cfg in enumerate(configs):
-        avg_f_acc = df[df['config_name'] == cfg]['frame_accuracy'].mean()
-        add_stat_box(axes_flat[0], cfg, sns.color_palette()[i], i, f"{cfg}: {avg_f_acc:.1%} Avg", 'lower right')
-
-    # --- PLOT 2: Cumulative Cell Identification (Top-Right) -> Lower Right ---
-    # --- PLOT 2 Fix: Cumulative Cell Identification ---
-    ts = df.groupby(['canonical_time', 'config_name']).agg(
-        min_correct=('n_correct', 'sum'), min_total=('N_valid', 'sum')
-    ).reset_index()
-
-    ts = ts.sort_values(['config_name', 'canonical_time']).reset_index(drop=True)
-    ts['cum_correct'] = ts.groupby('config_name')['min_correct'].cumsum()
-    ts['cum_total'] = ts.groupby('config_name')['min_total'].cumsum()
-    ts['running_acc'] = ts['cum_correct'] / ts['cum_total']
-
-    # 1. Create an explicit color map to ensure lines and boxes match
-    unique_configs = sorted(ts['config_name'].unique())
-    palette = sns.color_palette("tab10", n_colors=len(unique_configs))
-    color_map = dict(zip(unique_configs, palette))
-
-    # 2. Plot with the explicit palette
-    sns.lineplot(
-        data=ts, x='canonical_time', y='running_acc', 
-        hue='config_name', palette=color_map, linewidth=2.5, ax=axes_flat[1]
-    )
-    axes_flat[1].set_title("Total Cumulative Cell Accuracy", fontsize=13, weight='bold')
-
-    # 3. Annotate using the mapped colors
-    for i, cfg in enumerate(unique_configs):
-        final_row = ts[ts['config_name'] == cfg].iloc[-1]
-        total_cell_acc = final_row['cum_correct'] / final_row['cum_total']
-        
-        # Use color_map[cfg] instead of palette[i] to guarantee the match
-        add_stat_box(
-            axes_flat[1], cfg, color_map[cfg], i, 
-            f"{cfg}: {total_cell_acc:.1%} Total", 'lower right'
-        )
-
-    # --- PLOT 3: Alignment Cost (Bottom-Left) -> Upper Left ---
-    sns.pointplot(
-        data=df, x='time_bin', y='total_mahalanobis_cost', hue='config_name',
-        join=False, dodge=0.4, errorbar=('ci', 95), capsize=0.1, 
-        markers=["o", "s", "D", "^"], ax=axes_flat[2]
-    )
-    axes_flat[2].set_title("Mahalanobis Alignment Cost ($D^2$)", fontsize=13, weight='bold')
-    
-    for i, cfg in enumerate(configs):
-        cfg_df = df[df['config_name'] == cfg]
-        avg_cost = cfg_df['total_mahalanobis_cost'].mean()
-        total_cost = cfg_df['total_mahalanobis_cost'].sum()
-        add_stat_box(axes_flat[2], cfg, sns.color_palette()[i], i, f"{cfg}: Avg {avg_cost:.1f} | Tot {total_cost:,.0f}", 'upper left')
-
-    # --- PLOT 4: Computational Load (Bottom-Right) -> Upper Left ---
-    sns.pointplot(
-        data=df, x='time_bin', y='runtime_sec', hue='config_name',
-        estimator="sum", join=False, dodge=0.4, errorbar=('ci', 95), 
-        capsize=0.1, markers=["o", "s", "D", "^"], ax=axes_flat[3]
-    )
-    axes_flat[3].set_title(f"Total Computational Load (Sum per {bin_size}m bin)", fontsize=13, weight='bold')
-    
-    for i, cfg in enumerate(configs):
-        cfg_df = df[df['config_name'] == cfg]
-        avg_rt = cfg_df['runtime_sec'].mean()
-        total_rt = cfg_df['runtime_sec'].sum()
-        add_stat_box(axes_flat[3], cfg, sns.color_palette()[i], i, f"{cfg}: Avg {avg_rt:.2f}s | Tot {total_rt:.1f}s", 'upper left')
-
-    # --- FINAL FORMATTING ---
-    for i, ax in enumerate(axes_flat):
-        if ax.get_legend(): ax.get_legend().remove()
-        
-        if i in [0, 2, 3]:
-            all_bins = sorted(df['time_bin'].unique())
-            labels = [int(v) if v % 20 == 0 else "" for v in all_bins]
-            ax.set_xticklabels(labels)
-        
-        ax.set_xlabel("Minutes Post-Fertilization (MPF)")
-
-    plt.suptitle("Benchmarking Sweep: Accuracy, Lineage Recovery, and Computational Efficiency", 
-                 fontsize=18, weight='bold', y=0.98)
-    
-    plt.tight_layout(rect=[0, 0.03, 1, 0.95])
-    plt.close(fig)
-    return fig
-
-
-def plot_sweep_dashboard(df, bin_size=5):
-    """
-    Unified 2x2 dashboard with guaranteed color consistency across all 
-    panels and annotations.
+    Facet Grid tracking Positional Accuracy over Time.
+    - 3-column grid for embryos.
+    - Tabular Global Summary block positioned closer to the plots.
     """
     df = df.copy()
-    sns.set_style("whitegrid")
-    
-    # --- 1. THE COLOR ANCHOR: Global Source of Truth ---
-    # We sort to ensure consistency regardless of the data structure
-    unique_configs = sorted(df['config_name'].unique())
-    # Using 'tab10' for distinct, high-contrast colors
-    palette_list = sns.color_palette("tab10", n_colors=len(unique_configs))
-    color_map = dict(zip(unique_configs, palette_list))
-    
-    # 2. Data Preparation
-    df['n_correct'] = (df['frame_accuracy'] * df['N_valid']).round()
-    df['time_bin'] = (df['canonical_time'] // bin_size) * bin_size
-    
-    fig, axes = plt.subplots(2, 2, figsize=(22, 14))
-    axes_flat = axes.flatten()
-
-    # --- HELPER: Position-Aware Annotation Logic (Sync'd to color_map) ---
-    def add_stat_box(ax, config_label, idx, text, position='lower right'):
-        color = color_map[config_label] # Pull color from master map
-        if position == 'lower right':
-            x_pos, y_pos = 0.98, 0.05 + (idx * 0.06)
-            ha = 'right'
-        else:
-            x_pos, y_pos = 0.02, 0.95 - (idx * 0.06)
-            ha = 'left'
-            
-        ax.text(
-            x_pos, y_pos, text, transform=ax.transAxes,
-            fontsize=10, color=color, weight='bold', horizontalalignment=ha,
-            bbox=dict(facecolor='white', alpha=0.8, edgecolor='none', pad=2)
-        )
-
-    # --- PLOT 1: Binned Frame Accuracy (Top-Left) ---
-    sns.pointplot(
-        data=df, x='time_bin', y='frame_accuracy', hue='config_name',
-        palette=color_map, hue_order=unique_configs, # Force Color Sync
-        join=False, dodge=0.4, errorbar=('ci', 95), capsize=0.1, 
-        markers=["o", "s", "D", "^"], ax=axes_flat[0]
-    )
-    axes_flat[0].set_title(f"Frame Accuracy (±95% CI, {bin_size}m bins)", fontsize=13, weight='bold')
-    axes_flat[0].set_ylim(-0.05, 1.05)
-    
-    for i, cfg in enumerate(unique_configs):
-        avg_f_acc = df[df['config_name'] == cfg]['frame_accuracy'].mean()
-        add_stat_box(axes_flat[0], cfg, i, f"{cfg}: {avg_f_acc:.1%} Avg", 'lower right')
-
-    # --- PLOT 2: Cumulative Accuracy (Top-Right) ---
-    ts = df.groupby(['canonical_time', 'config_name']).agg(
-        min_correct=('n_correct', 'sum'), min_total=('N_valid', 'sum')
-    ).reset_index()
-    ts = ts.sort_values(['config_name', 'canonical_time']).reset_index(drop=True)
-    ts['cum_correct'] = ts.groupby('config_name')['min_correct'].cumsum()
-    ts['cum_total'] = ts.groupby('config_name')['min_total'].cumsum()
-    ts['running_acc'] = ts['cum_correct'] / ts['cum_total']
-
-    sns.lineplot(
-        data=ts, x='canonical_time', y='running_acc', 
-        hue='config_name', palette=color_map, hue_order=unique_configs, # Force Color Sync
-        linewidth=2.5, ax=axes_flat[1]
-    )
-    axes_flat[1].set_title("Total Cumulative Cell Accuracy", fontsize=13, weight='bold')
-
-    for i, cfg in enumerate(unique_configs):
-        final_row = ts[ts['config_name'] == cfg].iloc[-1]
-        total_cell_acc = final_row['cum_correct'] / final_row['cum_total']
-        add_stat_box(axes_flat[1], cfg, i, f"{cfg}: {total_cell_acc:.1%} Total", 'lower right')
-
-    # --- PLOT 3: Alignment Cost (Bottom-Left) ---
-    sns.pointplot(
-        data=df, x='time_bin', y='total_mahalanobis_cost', hue='config_name',
-        palette=color_map, hue_order=unique_configs, # Force Color Sync
-        join=False, dodge=0.4, errorbar=('ci', 95), capsize=0.1, 
-        markers=["o", "s", "D", "^"], ax=axes_flat[2]
-    )
-    axes_flat[2].set_title("Mahalanobis Alignment Cost ($D^2$)", fontsize=13, weight='bold')
-    
-    for i, cfg in enumerate(unique_configs):
-        avg_cost = df[df['config_name'] == cfg]['total_mahalanobis_cost'].mean()
-        add_stat_box(axes_flat[2], cfg, i, f"{cfg}: Avg {avg_cost:.1f}", 'upper left')
-
-    # --- PLOT 4: Computational Load (Bottom-Right) ---
-    sns.pointplot(
-        data=df, x='time_bin', y='runtime_sec', hue='config_name',
-        palette=color_map, hue_order=unique_configs, # Force Color Sync
-        estimator="sum", join=False, dodge=0.4, errorbar=('ci', 95), 
-        capsize=0.1, markers=["o", "s", "D", "^"], ax=axes_flat[3]
-    )
-    axes_flat[3].set_title(f"Total Computational Load (Sum per {bin_size}m bin)", fontsize=13, weight='bold')
-    
-    for i, cfg in enumerate(unique_configs):
-        total_rt = df[df['config_name'] == cfg]['runtime_sec'].sum()
-        add_stat_box(axes_flat[3], cfg, i, f"{cfg}: Tot {total_rt:.1f}s", 'upper left')
-
-    # --- FINAL FORMATTING ---
-    for i, ax in enumerate(axes_flat):
-        if ax.get_legend(): ax.get_legend().remove()
-        
-        if i in [0, 2, 3]:
-            all_bins = sorted(df['time_bin'].unique())
-            labels = [int(v) if v % 20 == 0 else "" for v in all_bins]
-            ax.set_xticklabels(labels)
-        
-        ax.set_xlabel("Minutes Post-Fertilization (MPF)")
-
-    plt.suptitle("Engine Performance Sweep: Baseline vs. Topological Consensus", 
-                 fontsize=18, weight='bold', y=0.98)
-    
-    plt.tight_layout(rect=[0, 0.03, 1, 0.95])
-    plt.close(fig)
-    return fig
-
-# --- Execution ---
-# dashboard_fig = plot_sweep_dashboard(master_benchmark_df)
-# dashboard_fig.show()
-
-
-import seaborn as sns
-import matplotlib.pyplot as plt
-
-def plot_embryo_performance(df):
-    """
-    Facet Grid tracking Positional Accuracy over Time, with per-embryo stats 
-    and a Global Summary block in the bottom right.
-    Compatible with the new PipelineEvaluator output (Set Terminology).
-    """
-    df = df.copy()
-    
-    # 1. Map to new PipelineEvaluator columns (Updated to 'set_match')
-    # 'set_match' is 1.0 or 0.0 in the new output, convert to bool for alpha mapping
     df['set_match'] = df['set_match'].fillna(0.0).astype(bool)
-    
-    # Calculate absolute correct cells 
     df['n_correct'] = (df['positional_accuracy'] * df['num_gt_cells']).round()
     
     x_col = 'canonical_time' 
     y_col = 'positional_accuracy'
     
-    # 2. Setup FacetGrid (3 rows, 4 columns for 12 embryos)
+    # 1. Setup FacetGrid (3 columns for 11 embryos)
     g = sns.FacetGrid(
-        df, col="embryo_id", hue="config_name", col_wrap=4,
-        height=3.5, aspect=1.4, sharex=True, sharey=True
+        df, col="embryo_id", hue="config_name", col_wrap=3,
+        height=3.5, aspect=1.4, sharex=True, sharey=True, palette=palette
     )
     
-    # 3. Internal plotting function
+    # 2. Internal plotting function
     def plot_with_local_stats(data, color, label, **kwargs):
-        # Sort by time for clean continuous lines
         data = data.sort_values(x_col)
         x, y = data[x_col], data[y_col]
-        
-        # Plotting the main line
         plt.plot(x, y, color=color, alpha=0.3, linewidth=1.5, zorder=1)
         
-        # Scatter points (Solid if SET matched perfectly, transparent if wrong N/vocabulary)
         alphas = data['set_match'].map({True: 1.0, False: 0.2}).values
         plt.scatter(x, y, color=color, alpha=alphas, s=35, edgecolors='white', zorder=2)
 
-        # Per-facet local annotation
         ax = plt.gca()
         configs = list(df['config_name'].unique())
         idx = configs.index(label)
@@ -528,46 +159,624 @@ def plot_embryo_performance(df):
                 fontsize=8, color=color, weight='bold',
                 bbox=dict(facecolor='white', alpha=0.7, edgecolor='none'))
 
-    # Map the logic
     g.map_dataframe(plot_with_local_stats)
 
-    # 4. Calculate Global Summary Stats
-    summary_text = "GLOBAL SWEEP SUMMARY\n" + "="*21 + "\n"
-    configs = list(df['config_name'].unique())
+    # 3. Create Tabular Global Summary
+    configs = sorted(df['config_name'].unique())
+    
+    header = "GLOBAL SWEEP SUMMARY\n" + "="*70 + "\n"
+    table_header = f"{'CONFIG VERSION':<25} | {'AVG FRAME':>12} | {'TOTAL CELL':>12} | {'SET MATCH':>12}\n"
+    divider = "-" * len(table_header) + "\n"
+    
+    summary_text = header + table_header + divider
     
     for cfg in configs:
         c_df = df[df['config_name'] == cfg]
-        
         avg_f_acc = c_df[y_col].mean()
-        cell_acc = c_df['n_correct'].sum() / c_df['num_gt_cells'].sum() if c_df['num_gt_cells'].sum() > 0 else 0
-        set_match_rate = c_df['set_match'].mean()  # Updated to use set_match
+        total_gt = c_df['num_gt_cells'].sum()
+        cell_acc = c_df['n_correct'].sum() / total_gt if total_gt > 0 else 0
+        set_match_rate = c_df['set_match'].mean()
         
-        summary_text += (f"\n{cfg.upper()}\n"
-                         f"  Avg Frame:  {avg_f_acc:.1%}\n"
-                         f"  Total Cell: {cell_acc:.1%}\n"
-                         f"  Set Match:  {set_match_rate:.1%}\n") # Updated label
+        row = (f"{cfg.upper()[:24]:<25} | "
+               f"{avg_f_acc:>12.1%} | "
+               f"{cell_acc:>12.1%} | "
+               f"{set_match_rate:>12.1%}\n")
+        summary_text += row
 
-    # 5. Place Global Summary Box
+    # 4. Place Global Summary Box
+    # Adjusted y-coordinate (0.08) and va='top' to move it closer
     fig = plt.gcf()
     fig.text(
-        0.98, 0.02, 
+        0.5, 0.08, 
         summary_text,
         fontsize=10,
         family='monospace',
         color='black',
+        weight='bold',
+        ha='center', 
+        va='top',
+        bbox=dict(facecolor='white', alpha=0.9, edgecolor='gray', boxstyle='round,pad=1.0')
+    )
+
+    # 5. Formatting & Cleanup
+    g.set_axis_labels("Canonical Time", "Frame Accuracy")
+    g.set_titles("Embryo: {col_name}", size=12, weight='bold')
+    g.set(ylim=(-0.05, 1.05))
+    g.map(lambda **kwargs: plt.axhline(1.0, color='gray', linestyle='--', alpha=0.15))
+    
+    # rect=[left, bottom, right, top]
+    # We increase the bottom margin slightly (0.12) to clear the space for the box
+    plt.tight_layout(rect=[0, 0.12, 1, 0.98])
+    plt.close(fig) 
+    
+    return fig
+    
+    
+def plot_binned_accuracy(df, bin_size=5, palette = VERSION_PALETTE):
+    """
+    Plots binned Positional Accuracy over Canonical Time across configurations.
+    Features a consolidated Global Mean Accuracy summary box.
+    """
+    df = df.copy()
+    sns.set_style("whitegrid")
+    
+    # 1. Data Preparation
+    df['time_bin'] = (df['canonical_time'] // bin_size) * bin_size
+    
+    # 2. Plotting
+    plt.figure(figsize=(8, 8))
+    
+    # Using lineplot with error bars
+    ax = sns.lineplot(
+        data=df, 
+        x='time_bin', 
+        y='positional_accuracy', 
+        hue='config_name',
+        marker='o',
+        markersize=8,
+        linewidth=2.5,
+        errorbar=('ci', 95),
+        err_style="bars",
+        err_kws={'capsize': 5},
+        palette=palette
+    )
+
+    # 3. Build Global Summary Box
+    configs = df['config_name'].unique()
+    summary_parts = ["GLOBAL MEAN ACCURACY", "="*21]
+    
+    for cfg in configs:
+        c_df = df[df['config_name'] == cfg]
+        global_mean = c_df['positional_accuracy'].mean()
+        
+        # Formatted with padding for alignment: CONFIG_NAME: 00.0%
+        summary_parts.append(f"{cfg.upper():<12}: {global_mean:>6.1%}")
+
+    # 4. Final Formatting
+    #plt.title(f"Binned Performance Over Time ({bin_size}m intervals)", fontsize=14, weight='bold')
+    plt.xlabel(f"Canonical Time ({bin_size}m bins)", fontsize=12)
+    plt.ylabel("Frame Accuracy", fontsize=12)
+    plt.ylim(-0.05, 1.05)
+    plt.axhline(1.0, color='gray', linestyle='--', alpha=0.2)
+    
+    # Draw the summary box in the bottom right
+    summary_text = "\n".join(summary_parts)
+    plt.gca().text(
+        0.98, 0.02, 
+        summary_text,
+        transform=ax.transAxes,
+        fontsize=10, 
+        family='monospace', 
         weight='bold',
         ha='right', 
         va='bottom',
         bbox=dict(facecolor='white', alpha=0.9, edgecolor='gray', boxstyle='round,pad=0.8')
     )
 
-    # 6. Formatting & Cleanup
-    g.set_axis_labels("Time Index", "Positional Accuracy")
-    g.set_titles("Embryo: {col_name}", size=12, weight='bold')
-    g.set(ylim=(-0.05, 1.05))
-    g.map(lambda **kwargs: plt.axhline(1.0, color='gray', linestyle='--', alpha=0.15))
+    plt.tight_layout()
     
-    plt.tight_layout(rect=[0, 0.05, 1, 0.95])
-    plt.close(fig) # Prevent double plotting in Jupyter
+# HTML Report stuff
+def plot_optimization_landscape(slice_landscape, slice_id=None):
+    """
+    Plots the Coarse Roll Angle vs Cost alongside the ICP Convergence
+    traces for the selected tournament valleys.
     
+    Args:
+        slice_landscape (dict): A single dictionary from report['landscape'][slice_id]
+        slice_id (int, optional): The ID of the slice for the plot title.
+    """
+    coarse_history = slice_landscape.get('coarse', [])
+    tournament = slice_landscape.get('tournament', [])
+    
+    if not coarse_history:
+        print("No coarse trace history found. Did you run with trace=True?")
+        return
+
+    # --- 1. Process Coarse Data ---
+    df_coarse = pd.DataFrame(coarse_history)
+    df_plus = df_coarse[df_coarse['sign'] == 1.0].sort_values('angle')
+    df_minus = df_coarse[df_coarse['sign'] == -1.0].sort_values('angle')
+
+    # --- 2. Setup Plot ---
+    fig, axes = plt.subplots(1, 2, figsize=(16, 6))
+    sns.set_style("whitegrid")
+    
+    title_prefix = f"Slice ID {slice_id} | " if slice_id is not None else ""
+    fig.suptitle(f"{title_prefix}Alignment Optimization Diagnostics", fontsize=16, fontweight='bold')
+
+    # ==========================================
+    # LEFT PANEL: Coarse Roll Landscape
+    # ==========================================
+    ax1 = axes[0]
+    
+    # Plot the two orientation sweeps
+    ax1.plot(df_plus['angle'], df_plus['cost'], label='+PC1 Axis', color='#3498db', linewidth=2, alpha=0.8)
+    ax1.plot(df_minus['angle'], df_minus['cost'], label='-PC1 Axis', color='#e74c3c', linewidth=2, alpha=0.8)
+
+    # Highlight the local minima selected for the tournament
+    for i, finalist in enumerate(tournament):
+        init_angle = finalist['init_angle']
+        rank = finalist['start_rank']
+        
+        # Look up the exact starting cost of this valley from the coarse history
+        start_point = df_coarse[np.isclose(df_coarse['angle'], init_angle, atol=1e-5)]
+        if not start_point.empty:
+            start_cost = start_point['cost'].min()
+            ax1.scatter(init_angle, start_cost, color='#f1c40f', s=250, marker='*', edgecolor='black', zorder=5)
+            ax1.text(init_angle, start_cost, f" R{rank}", fontsize=12, fontweight='bold', ha='left', va='bottom', color='black')
+
+    ax1.set_title("Coarse Roll Initialization Landscape", fontsize=14)
+    ax1.set_xlabel("Rotation Angle (Degrees)", fontsize=12)
+    ax1.set_ylabel("Sinkhorn Approximation Cost", fontsize=12)
+    ax1.set_xlim(0, 360)
+    ax1.set_xticks(np.arange(0, 361, 60))
+    ax1.legend(loc='upper right')
+
+    # ==========================================
+    # RIGHT PANEL: ICP Convergence Traces
+    # ==========================================
+    ax2 = axes[1]
+    colors = sns.color_palette("Set2", n_colors=len(tournament))
+
+    for i, finalist in enumerate(tournament):
+        rank = finalist['start_rank']
+        angle = finalist['init_angle']
+        icp_history = finalist.get('icp_history', [])
+
+        if icp_history:
+            df_icp = pd.DataFrame(icp_history)
+            ax2.plot(
+                df_icp['iter'], df_icp['cost'], 
+                marker='o', markersize=5, 
+                label=f'Rank {rank} (Init: {angle:.1f}°)', 
+                color=colors[i], linewidth=2.5
+            )
+
+    ax2.set_title("ICP Refinement Convergence", fontsize=14)
+    ax2.set_xlabel("ICP Iteration", fontsize=12)
+    ax2.set_ylabel("Refined Registration Cost", fontsize=12)
+    
+    # Force integers on the X-axis for iterations
+    from matplotlib.ticker import MaxNLocator
+    ax2.xaxis.set_major_locator(MaxNLocator(integer=True))
+    ax2.legend()
+
+    plt.tight_layout()
+    plt.show()
+    
+import plotly.graph_objects as go
+
+def get_plotly_temporal_context(growth_df, observed_n, map_t):
+    """
+    Generates an interactive Plotly figure comparing the inferred embryo 
+    against the empirical population growth curve.
+    """
+    fig = go.Figure()
+
+    # 1. Plot the 95% Confidence Interval (Shaded Band)
+    fig.add_trace(go.Scatter(
+        x=pd.concat([growth_df['time_bin'], growth_df['time_bin'][::-1]]),
+        y=pd.concat([growth_df['ci_upper'], growth_df['ci_lower'][::-1]]),
+        fill='toself',
+        fillcolor='rgba(52, 152, 219, 0.2)', # Light blue
+        line=dict(color='rgba(255,255,255,0)'),
+        hoverinfo="skip",
+        name='95% Biological Variance',
+        showlegend=True
+    ))
+
+    # 2. Plot the Mean Curve
+    fig.add_trace(go.Scatter(
+        x=growth_df['time_bin'],
+        y=growth_df['mean_n'],
+        mode='lines',
+        line=dict(color='#2c3e50', width=3),
+        name='Empirical Mean',
+        hovertemplate='Time: %{x}m<br>Avg Cells: %{y:.1f}<extra></extra>'
+    ))
+
+    # 3. Project the Inference Observation (The Red Star)
+    fig.add_trace(go.Scatter(
+        x=[map_t],
+        y=[observed_n],
+        mode='markers',
+        marker=dict(
+            color='#e74c3c', 
+            size=18, 
+            symbol='star', 
+            line=dict(color='black', width=1)
+        ),
+        name='Current Embryo',
+        hovertemplate=f'<b>Observation</b><br>MAP Time: {map_t:.1f}m<br>Observed Cells: {observed_n}<extra></extra>'
+    ))
+
+    # 4. Add Crosshairs to pinpoint the star
+    fig.add_hline(y=observed_n, line_dash="dot", line_color="#e74c3c", opacity=0.5)
+    fig.add_vline(x=map_t, line_dash="dot", line_color="#e74c3c", opacity=0.5)
+
+    # 5. Formatting for HTML
+    fig.update_layout(
+        title="MAP Time Estimate",
+        xaxis_title="Canonical Time (minutes)",
+        yaxis_title="Total Number of Cells",
+        plot_bgcolor='white',
+        hovermode="x unified",
+        legend=dict(yanchor="top", y=0.99, xanchor="left", x=0.01),
+        margin=dict(l=40, r=40, t=60, b=40)
+    )
+    
+    # Add subtle gridlines
+    fig.update_xaxes(showgrid=True, gridwidth=1, gridcolor='LightGray')
+    fig.update_yaxes(showgrid=True, gridwidth=1, gridcolor='LightGray')
+
+    return fig
+
+import pandas as pd
+import numpy as np
+import plotly.graph_objects as go
+
+# 1. Ensure the plotting function is defined
+def get_plotly_temporal_context(growth_df, observed_n, map_t):
+    """
+    Generates an interactive Plotly figure comparing the inferred embryo 
+    against the empirical population growth curve.
+    """
+    fig = go.Figure()
+
+    # 1. Plot the 95% Confidence Interval (Shaded Band)
+    fig.add_trace(go.Scatter(
+        x=pd.concat([growth_df['time_bin'], growth_df['time_bin'][::-1]]),
+        y=pd.concat([growth_df['ci_upper'], growth_df['ci_lower'][::-1]]),
+        fill='toself',
+        fillcolor='rgba(52, 152, 219, 0.2)',
+        line=dict(color='rgba(255,255,255,0)'),
+        hoverinfo="skip",
+        name='95% Biological Variance',
+        showlegend=True
+    ))
+
+    # 2. Plot the Mean Curve
+    fig.add_trace(go.Scatter(
+        x=growth_df['time_bin'],
+        y=growth_df['mean_n'],
+        mode='lines',
+        line=dict(color='#2c3e50', width=3),
+        name='Empirical Mean',
+        hovertemplate='Time: %{x}m<br>Avg Cells: %{y:.1f}<extra></extra>'
+    ))
+
+    # 3. Project the Inference Observation (The Red Star)
+    fig.add_trace(go.Scatter(
+        x=[map_t],
+        y=[observed_n],
+        mode='markers',
+        marker=dict(
+            color='#e74c3c', 
+            size=18, 
+            symbol='star', 
+            line=dict(color='black', width=1)
+        ),
+        name='Current Embryo',
+        hovertemplate=f'<b>Observation</b><br>MAP Time: {map_t:.1f}m<br>Observed Cells: {observed_n}<extra></extra>'
+    ))
+
+    # 4. Add Crosshairs
+    fig.add_hline(y=observed_n, line_dash="dot", line_color="#e74c3c", opacity=0.5)
+    fig.add_vline(x=map_t, line_dash="dot", line_color="#e74c3c", opacity=0.5)
+
+    # 5. Formatting
+    fig.update_layout(
+        title="Embryogenesis Curve vs. MAP Time Estimation",
+        xaxis_title="Canonical Time (minutes)",
+        yaxis_title="Total Number of Cells",
+        plot_bgcolor='white',
+        hovermode="x unified",
+        legend=dict(yanchor="top", y=0.99, xanchor="left", x=0.01),
+        margin=dict(l=40, r=40, t=60, b=40)
+    )
+    
+    fig.update_xaxes(showgrid=True, gridwidth=1, gridcolor='LightGray')
+    fig.update_yaxes(showgrid=True, gridwidth=1, gridcolor='LightGray')
+
+    return fig
+
+
+import plotly.graph_objects as go
+import numpy as np
+from scipy.linalg import eigh
+
+def plot_inference_alignment_interactive(result: dict, title=None):
+    """
+    Interactive Plotly visualizer for 3D alignment.
+    Renders the Atlas as solid, translucent 3D ellipsoids and the 
+    observed cells as solid spheres, connected by residual lines.
+    Features a physical plotting stage and togglable cell labels.
+    """
+    predicted_labels = result.get('labels', [])
+    aligned_coords = result.get('coords', np.array([]))
+    ref_frame = result.get('ref_frame', None)
+    
+    if len(predicted_labels) == 0 or ref_frame is None:
+        print("Alignment results missing or 'ref_frame' not returned.")
+        return
+
+    # 1. Setup Colors (Matching your lineage palette)
+    lineage_colors = {
+        'AB': '#1f77b4', 'MS': '#ff7f0e', 'E': '#2ca02c', 
+        'C': '#d62728', 'D': '#9467bd', 'P': '#8c564b'
+    }
+    def get_color(name):
+        for key, hex_val in lineage_colors.items():
+            if str(name).startswith(key): return hex_val
+        return '#7f7f7f' # Gray
+
+    fig = go.Figure()
+    atlas_lookup = {}
+
+    # ==========================================
+    # 2. Add Atlas Ellipsoids (Solid 3D Meshes)
+    # ==========================================
+    for label, mu, cov in zip(ref_frame.labels, ref_frame.means, ref_frame.covs):
+        color = get_color(label)
+        atlas_lookup[label] = mu
+        
+        # Ensure covariance matrix format
+        v = np.atleast_1d(cov)
+        cov_matrix = np.eye(3) * v[0] if v.shape == (1,) else (np.diag(v) if v.ndim == 1 else v)
+        
+        # Calculate eigenvalues/vectors
+        vals, vecs = eigh(cov_matrix)
+        vals = 2.0 * np.sqrt(np.maximum(vals, 0)) # 2.0 scale factor (95% bounds)
+        
+        # Generate spherical coordinates
+        u = np.linspace(0, 2 * np.pi, 20)
+        v_angle = np.linspace(0, np.pi, 15)
+        x = np.outer(np.cos(u), np.sin(v_angle))
+        y = np.outer(np.sin(u), np.sin(v_angle))
+        z = np.outer(np.ones_like(u), np.cos(v_angle))
+        
+        # Transform sphere to oriented ellipsoid
+        ellipsoid = np.stack((x, y, z), axis=-1) @ (vecs @ np.diag(vals)).T + mu
+        
+        # Add as a solid translucent convex hull
+        fig.add_trace(go.Mesh3d(
+            x=ellipsoid[:,:,0].flatten(), 
+            y=ellipsoid[:,:,1].flatten(), 
+            z=ellipsoid[:,:,2].flatten(),
+            alphahull=0,     # Creates a tight wrap around the points
+            color=color,
+            opacity=0.15,    # Glass-like transparency
+            name=f"Atlas {label}",
+            hoverinfo='name',
+            showlegend=False
+        ))
+
+    # ==========================================
+    # 3. Add Displacement Lines (Highly Optimized)
+    # ==========================================
+    # We use a single trace with 'None' breaks to prevent HTML bloat
+    line_x, line_y, line_z = [], [], []
+    for label, coord in zip(predicted_labels, aligned_coords):
+        if label in atlas_lookup:
+            mu = atlas_lookup[label]
+            line_x.extend([coord[0], mu[0], None])
+            line_y.extend([coord[1], mu[1], None])
+            line_z.extend([coord[2], mu[2], None])
+
+    fig.add_trace(go.Scatter3d(
+        x=line_x, y=line_y, z=line_z,
+        mode='lines',
+        line=dict(color='black', width=3, dash='dot'),
+        opacity=0.4,
+        showlegend=False,
+        hoverinfo='none',
+        name="Residuals"
+    ))
+
+    # ==========================================
+    # 4. Add Aligned Experimental Points
+    # ==========================================
+    colors_inf = [get_color(l) for l in predicted_labels]
+    
+    # Extract confidence scores if available for hover data
+    hovers = []
+    if 'diagnostics' in result:
+        conf_scores = result['diagnostics']['confidence_score'].values
+        for l, c in zip(predicted_labels, conf_scores):
+            hovers.append(f"<b>{l}</b><br>Confidence: {c:.1%}")
+    else:
+        hovers = [f"<b>{l}</b>" for l in predicted_labels]
+
+    fig.add_trace(go.Scatter3d(
+        x=aligned_coords[:, 0], 
+        y=aligned_coords[:, 1], 
+        z=aligned_coords[:, 2],
+        mode='markers+text', # Labels ON by default
+        text=predicted_labels,
+        textposition="top center",
+        textfont=dict(size=10, color='black', weight='bold'),
+        marker=dict(
+            size=7, 
+            color=colors_inf, 
+            line=dict(color='black', width=1.5), 
+            symbol='circle'
+        ),
+        name='Inference Data',
+        hovertext=hovers,
+        hoverinfo='text',
+        showlegend=False
+    ))
+
+    # Calculate the exact index of the Inference Data trace for the toggle button
+    # It is added after N meshes + 1 residual line trace
+    inference_trace_idx = len(ref_frame.labels) + 1
+
+    # ==========================================
+    # 5. Layout, Stage, and Interactivity
+    # ==========================================
+    if title is None:
+        t_map = result.get('map_time', np.nan)
+        cost = result.get('cost', 0.0)
+        title = f"3D Alignment Map | N={len(predicted_labels)} | t_MAP={t_map:.1f} | Cost={cost:.1f}"
+
+    fig.update_layout(
+        title=dict(text=title, font=dict(size=16, color='black')),
+        
+        # The Plotting Stage (Colored background panels with crisp grid lines)
+        scene=dict(
+            xaxis=dict(title='X (μm)', showbackground=True, backgroundcolor="#e5e5e5", gridcolor="white", showspikes=True),
+            yaxis=dict(title='Y (μm)', showbackground=True, backgroundcolor="#e5e5e5", gridcolor="white", showspikes=True),
+            zaxis=dict(title='Z (μm)', showbackground=True, backgroundcolor="#e5e5e5", gridcolor="white", showspikes=True),
+            aspectmode='data' 
+        ),
+        
+        # UI Buttons (The Label Toggle)
+        updatemenus=[
+            dict(
+                type="buttons",
+                direction="left",
+                buttons=list([
+                    dict(
+                        label="Labels ON",
+                        method="restyle",
+                        args=[{"mode": "markers+text"}, [inference_trace_idx]]
+                    ),
+                    dict(
+                        label="Labels OFF",
+                        method="restyle",
+                        args=[{"mode": "markers"}, [inference_trace_idx]]
+                    )
+                ]),
+                pad={"r": 10, "t": 10},
+                showactive=True,
+                x=0.01,
+                xanchor="left",
+                y=1.08,
+                yanchor="top",
+                bgcolor="white",
+                bordercolor="gray"
+            ),
+        ],
+        margin=dict(l=10, r=10, b=10, t=80),
+        plot_bgcolor='white',
+        paper_bgcolor='white',
+    )
+
+    #fig.show()
+    return fig
+
+
+
+def plot_spatial_confidence_interactive(result: dict, title=None):
+    """
+    Interactive Plotly visualizer for Spatial Confidence.
+    Plots the aligned experimental cells colored by the Oracle's 
+    predicted confidence score using a Red-to-Green heatmap.
+    Includes a 10% bounding box padding to prevent wall-clipping.
+    """
+    predicted_labels = result.get('labels', [])
+    aligned_coords = result.get('coords', np.array([]))
+    
+    if len(predicted_labels) == 0:
+        print("Alignment results missing.")
+        return
+        
+    if 'diagnostics' not in result or 'confidence_score' not in result['diagnostics'].columns:
+        print("Confidence scores not found. Did you run the result through the Oracle?")
+        return
+        
+    conf_scores = result['diagnostics']['confidence_score'].values
+    fig = go.Figure()
+
+    hovers = [f"<b>{l}</b><br>Confidence: {c:.1%}" for l, c in zip(predicted_labels, conf_scores)]
+
+    fig.add_trace(go.Scatter3d(
+        x=aligned_coords[:, 0], 
+        y=aligned_coords[:, 1], 
+        z=aligned_coords[:, 2],
+        mode='markers+text',
+        text=predicted_labels,
+        textposition="top center",
+        textfont=dict(size=10, color='black', weight='bold'),
+        marker=dict(
+            size=10, 
+            color=conf_scores, 
+            colorscale='RdYlGn', 
+            cmin=0.0, cmax=1.0,
+            showscale=True,
+            colorbar=dict(title="Confidence", tickformat=".0%", thickness=15, len=0.7),
+            line=dict(color='black', width=1.5) 
+        ),
+        name='Confidence Map',
+        hovertext=hovers,
+        hoverinfo='text',
+        showlegend=False
+    ))
+
+    # ==========================================
+    # Calculate Padding for the 3D Stage Walls
+    # ==========================================
+    x_min, x_max = aligned_coords[:, 0].min(), aligned_coords[:, 0].max()
+    y_min, y_max = aligned_coords[:, 1].min(), aligned_coords[:, 1].max()
+    z_min, z_max = aligned_coords[:, 2].min(), aligned_coords[:, 2].max()
+
+    # Add 10% padding to each axis
+    pad_x = (x_max - x_min) * 0.10
+    pad_y = (y_max - y_min) * 0.10
+    pad_z = (z_max - z_min) * 0.10
+
+    if title is None:
+        mean_conf = result.get('mean_confidence', np.mean(conf_scores))
+        title = f"Spatial Confidence Map | N={len(predicted_labels)} | Mean Conf={mean_conf:.1%}"
+
+    fig.update_layout(
+        title=dict(text=title, font=dict(size=16, color='black')),
+        
+        scene=dict(
+            # Apply the padded ranges to push the walls outward
+            xaxis=dict(title='X (μm)', range=[x_min - pad_x, x_max + pad_x], showbackground=True, backgroundcolor="#e5e5e5", gridcolor="white", showspikes=True),
+            yaxis=dict(title='Y (μm)', range=[y_min - pad_y, y_max + pad_y], showbackground=True, backgroundcolor="#e5e5e5", gridcolor="white", showspikes=True),
+            zaxis=dict(title='Z (μm)', range=[z_min - pad_z, z_max + pad_z], showbackground=True, backgroundcolor="#e5e5e5", gridcolor="white", showspikes=True),
+            aspectmode='data' 
+        ),
+        
+        updatemenus=[
+            dict(
+                type="buttons",
+                direction="left",
+                buttons=list([
+                    dict(label="Labels ON", method="restyle", args=[{"mode": "markers+text"}, [0]]),
+                    dict(label="Labels OFF", method="restyle", args=[{"mode": "markers"}, [0]])
+                ]),
+                pad={"r": 10, "t": 10},
+                showactive=True, x=0.01, xanchor="left", y=1.08, yanchor="top",
+                bgcolor="white", bordercolor="gray"
+            ),
+        ],
+        margin=dict(l=10, r=10, b=10, t=80),
+        plot_bgcolor='white',
+        paper_bgcolor='white',
+    )
+
+    #fig.show()
     return fig
