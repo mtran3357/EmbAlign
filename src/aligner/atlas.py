@@ -566,3 +566,37 @@ class AtlasFactory:
         
         std_t = np.sqrt(np.sum(posteriors * (t_grid - np.sum(posteriors * t_grid))**2))
         return map_t, labels, np.exp(-std_t / 5.0), std_t
+    
+def build_empirical_growth_curve(full_df, bin_size=1.0, output_path="production_models/empirical_growth_curve.csv"):
+    """
+    Extracts the mean growth curve and 95% biological variance intervals from the raw dataset.
+    """
+    # 1. Get the cell count for every embryo at every frame
+    valid_cells = full_df[full_df['valid'] == 1].copy()
+    
+    # Bin the canonical time to smooth out micro-variations
+    valid_cells['time_bin'] = (valid_cells['canonical_time'] / bin_size).round() * bin_size
+    
+    # Count cells per frame
+    frame_counts = valid_cells.groupby(['embryo_id', 'time_bin'])['cell_name'].nunique().reset_index()
+    frame_counts.rename(columns={'cell_name': 'n_cells'}, inplace=True)
+    
+    # 2. Calculate Population Mean and 95% Interval per time bin
+    growth_curve = frame_counts.groupby('time_bin').agg(
+        mean_n=('n_cells', 'mean'),
+        std_n=('n_cells', 'std'),
+        n_embryos=('embryo_id', 'nunique')
+    ).reset_index()
+    
+    # Clean up edge cases (bins with only 1 embryo have NaN std)
+    growth_curve['std_n'] = growth_curve['std_n'].fillna(0)
+    
+    # Calculate 95% Biological Variance Band (1.96 * standard deviation)
+    growth_curve['ci_lower'] = np.maximum(0, growth_curve['mean_n'] - 1.96 * growth_curve['std_n'])
+    growth_curve['ci_upper'] = growth_curve['mean_n'] + 1.96 * growth_curve['std_n']
+    
+    # 3. Save as a tiny, highly portable artifact
+    growth_curve.to_csv(output_path, index=False)
+    print(f"Saved empirical growth curve to {output_path}")
+    
+    return growth_curve
