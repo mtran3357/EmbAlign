@@ -1,6 +1,7 @@
 import pandas as pd
 import numpy as np
 from tqdm import tqdm
+from typing import Tuple
 
 class PipelineEvaluator:
     @staticmethod
@@ -59,7 +60,93 @@ class PipelineEvaluator:
             eval_records.append(eval_record)
             
         return pd.DataFrame(eval_records)
-    
+
+class ValidationRunner:
+    """
+    Executes an alignment run on an out-of-sample, ground-truth labeled dataset 
+    using production models. Calculates positional and set accuracies without LOOCV.
+    """
+    def __init__(self, engine, oracle=None):
+        self.engine = engine
+        self.oracle = oracle
+        
+    def evaluate_orthogonal_dataset(self, validation_df: pd.DataFrame, verbose: bool = True) -> Tuple[pd.DataFrame, pd.DataFrame]:
+        """
+        Runs the production engine against a validation dataset formatted exactly like 
+        the training 'all_points_long_format' dataframe.
+        """
+        all_frame_results = []
+        all_diagnostics = []
+        config_name = 'production_model'
+        
+        # Identify unique frames in the validation set
+        unique_frames = validation_df[['embryo_id', 'time_idx']].drop_duplicates()
+        
+        if verbose:
+            print(f"Starting Orthogonal Validation on {len(unique_frames)} frames...")
+            
+        for _, row in tqdm(unique_frames.iterrows(), total=len(unique_frames), disable=not verbose):
+            eid, t_idx = row['embryo_id'], row['time_idx']
+            
+            try:
+                # 1. Build the frame using existing infrastructure
+                from aligner.models import EmbryoFrame # Ensure this is imported at the top of runner.py
+                frame = EmbryoFrame.from_dataframe(validation_df, eid, t_idx)
+                
+                # 2. Align using the pre-loaded production atlas
+                res = self.engine.align_frame(frame, return_diagnostics=True)
+                if res is None:
+                    continue
+                    
+                # 3. Score with the production Oracle
+                if self.oracle:
+                    res = self.oracle.predict_confidence(res)
+                    
+                # 4. Extract Diagnostics (Cell-level)
+                if 'diagnostics' in res and res['diagnostics'] is not None:
+                    d_df = res.pop('diagnostics')
+                    # Inject metadata for the evaluator
+                    d_df['config_name'] = config_name
+                    d_df['embryo_id'] = str(eid)
+                    d_df['time_idx'] = int(t_idx)
+                    all_diagnostics.append(d_df)
+                    
+                # 5. Extract Frame-level metrics
+                excluded_keys = ['coords', 'ref_frame', 'labels', 'per_cell_costs', 'entropy', 'icp_history']
+                flat_res = {k: v for k, v in res.items() if k not in excluded_keys}
+                flat_res['num_cells_assigned'] = len(res.get('labels', []))
+                flat_res['config_name'] = config_name
+                flat_res['embryo_id'] = str(eid)
+                flat_res['time_idx'] = int(t_idx)
+                
+                all_frame_results.append(flat_res)
+                
+            except Exception as e:
+                if verbose: print(f"Skipped {eid} T={t_idx}: {e}")
+
+        # 6. Aggregate and Evaluate
+        final_frame_df = pd.DataFrame(all_frame_results)
+        final_diag_df = pd.concat(all_diagnostics, ignore_index=True) if all_diagnostics else pd.DataFrame()
+        
+        if not final_frame_df.empty:
+            # Re-use your robust benchmarking evaluator, passing the validation_df as ground truth!
+            final_frame_df = PipelineEvaluator.evaluate_benchmark(
+                final_frame_df, 
+                final_diag_df, 
+                validation_df
+            )
+            
+            if verbose:
+                print(f"\n" + "-"*40)
+                print(f"RUN COMPLETE")
+                print(f"Positional Accuracy:  {final_frame_df['positional_accuracy'].mean()*100:.1f}%")
+                print(f"Set Overlap (Acc):    {final_frame_df['set_accuracy'].mean()*100:.1f}%")
+                print(f"Perfect Set Matches:  {int(final_frame_df['set_match'].sum())}/{len(final_frame_df)}")
+                if 'mean_confidence' in final_frame_df.columns:
+                    print(f"Mean Oracle Confidence: {final_frame_df['mean_confidence'].mean()*100:.1f}%")
+                print("-" * 40 + "\n")
+                
+        return final_frame_df, final_diag_df
 
 class InferenceRunner:
     """
