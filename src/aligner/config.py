@@ -95,3 +95,11 @@ class PipelineConfig:
         config.slice_strategy = SliceStrategy.AUGMENTED
         config.enable_diagnostics = True
         return config
+    
+    @classmethod
+    def v3_0_production(cls):
+        """v3.0: Time-Resolved GP Atlas, strictly OBSERVED slices, Full Diagnostics."""
+        config = cls.v2_0_dynamic() # Inherits Time-Resolved GP & Tournament Init
+        config.slice_strategy = SliceStrategy.OBSERVED # Forces observed slices only
+        config.enable_diagnostics = True
+        return config
