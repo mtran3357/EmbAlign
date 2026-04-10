@@ -95,7 +95,7 @@ class ModularAlignmentEngine:
             for v in unique_valleys:
                 if entry['sign'] == v['sign']:
                     diff = abs(entry['angle'] - v['angle'])
-                    if min(diff, 360 - diff) < 60:
+                    if min(diff, 360 - diff) < 30:
                         is_new_valley = False
                         break
             if is_new_valley:

@@ -69,7 +69,7 @@ class SinkhornMatcher(BaseMatcher):
         if return_matrix:
             return P
             
-        # Hardening: Return discrete assignments (fallback logic)
+        # Hardening: Return discrete assignments
         row_ind = np.arange(len(obs_coords))
         col_ind = np.argmax(P, axis=1)
         return row_ind, col_ind
