@@ -3,6 +3,10 @@ import numpy as np
 import seaborn as sns
 from mpl_toolkits.mplot3d import Axes3D
 from typing import Optional, List
+import pandas as pd
+import plotly.graph_objects as go
+from scipy.linalg import eigh
+from matplotlib.ticker import MaxNLocator
 
 class SpatialVisualizer:
     def __init__(self, atlas):
@@ -109,9 +113,6 @@ class SpatialVisualizer:
         z = np.outer(np.ones_like(u), np.cos(v))
         ellipsoid = np.stack((x, y, z), axis=-1) @ (vecs @ np.diag(vals)).T + center
         return ellipsoid[:,:,0], ellipsoid[:,:,1], ellipsoid[:,:,2]
-
-import matplotlib.pyplot as plt
-import seaborn as sns
 
 VERSION_PALETTE = {
     "V0.0": "#9b59b6",  # Purple
@@ -358,84 +359,12 @@ def plot_optimization_landscape(slice_landscape, slice_id=None):
     ax2.set_ylabel("Refined Registration Cost", fontsize=12)
     
     # Force integers on the X-axis for iterations
-    from matplotlib.ticker import MaxNLocator
     ax2.xaxis.set_major_locator(MaxNLocator(integer=True))
     ax2.legend()
 
     plt.tight_layout()
     plt.show()
     
-import plotly.graph_objects as go
-
-def get_plotly_temporal_context(growth_df, observed_n, map_t):
-    """
-    Generates an interactive Plotly figure comparing the inferred embryo 
-    against the empirical population growth curve.
-    """
-    fig = go.Figure()
-
-    # 1. Plot the 95% Confidence Interval (Shaded Band)
-    fig.add_trace(go.Scatter(
-        x=pd.concat([growth_df['time_bin'], growth_df['time_bin'][::-1]]),
-        y=pd.concat([growth_df['ci_upper'], growth_df['ci_lower'][::-1]]),
-        fill='toself',
-        fillcolor='rgba(52, 152, 219, 0.2)', # Light blue
-        line=dict(color='rgba(255,255,255,0)'),
-        hoverinfo="skip",
-        name='95% Biological Variance',
-        showlegend=True
-    ))
-
-    # 2. Plot the Mean Curve
-    fig.add_trace(go.Scatter(
-        x=growth_df['time_bin'],
-        y=growth_df['mean_n'],
-        mode='lines',
-        line=dict(color='#2c3e50', width=3),
-        name='Empirical Mean',
-        hovertemplate='Time: %{x}m<br>Avg Cells: %{y:.1f}<extra></extra>'
-    ))
-
-    # 3. Project the Inference Observation (The Red Star)
-    fig.add_trace(go.Scatter(
-        x=[map_t],
-        y=[observed_n],
-        mode='markers',
-        marker=dict(
-            color='#e74c3c', 
-            size=18, 
-            symbol='star', 
-            line=dict(color='black', width=1)
-        ),
-        name='Current Embryo',
-        hovertemplate=f'<b>Observation</b><br>MAP Time: {map_t:.1f}m<br>Observed Cells: {observed_n}<extra></extra>'
-    ))
-
-    # 4. Add Crosshairs to pinpoint the star
-    fig.add_hline(y=observed_n, line_dash="dot", line_color="#e74c3c", opacity=0.5)
-    fig.add_vline(x=map_t, line_dash="dot", line_color="#e74c3c", opacity=0.5)
-
-    # 5. Formatting for HTML
-    fig.update_layout(
-        title="MAP Time Estimate",
-        xaxis_title="Canonical Time (minutes)",
-        yaxis_title="Total Number of Cells",
-        plot_bgcolor='white',
-        hovermode="x unified",
-        legend=dict(yanchor="top", y=0.99, xanchor="left", x=0.01),
-        margin=dict(l=40, r=40, t=60, b=40)
-    )
-    
-    # Add subtle gridlines
-    fig.update_xaxes(showgrid=True, gridwidth=1, gridcolor='LightGray')
-    fig.update_yaxes(showgrid=True, gridwidth=1, gridcolor='LightGray')
-
-    return fig
-
-import pandas as pd
-import numpy as np
-import plotly.graph_objects as go
-
 # 1. Ensure the plotting function is defined
 def get_plotly_temporal_context(growth_df, observed_n, map_t):
     """
@@ -500,11 +429,6 @@ def get_plotly_temporal_context(growth_df, observed_n, map_t):
     fig.update_yaxes(showgrid=True, gridwidth=1, gridcolor='LightGray')
 
     return fig
-
-
-import plotly.graph_objects as go
-import numpy as np
-from scipy.linalg import eigh
 
 def plot_inference_alignment_interactive(result: dict, title=None):
     """
@@ -781,3 +705,37 @@ def plot_spatial_confidence_interactive(result: dict, title=None):
 
     #fig.show()
     return fig
+
+def build_empirical_growth_curve(full_df, bin_size=1.0, output_path="production_models/empirical_growth_curve.csv"):
+    """
+    Extracts the mean growth curve and 95% biological variance intervals from the raw dataset.
+    """
+    # 1. Get the cell count for every embryo at every frame
+    valid_cells = full_df[full_df['valid'] == 1].copy()
+    
+    # Bin the canonical time to smooth out micro-variations
+    valid_cells['time_bin'] = (valid_cells['canonical_time'] / bin_size).round() * bin_size
+    
+    # Count cells per frame
+    frame_counts = valid_cells.groupby(['embryo_id', 'time_bin'])['cell_name'].nunique().reset_index()
+    frame_counts.rename(columns={'cell_name': 'n_cells'}, inplace=True)
+    
+    # 2. Calculate Population Mean and 95% Interval per time bin
+    growth_curve = frame_counts.groupby('time_bin').agg(
+        mean_n=('n_cells', 'mean'),
+        std_n=('n_cells', 'std'),
+        n_embryos=('embryo_id', 'nunique')
+    ).reset_index()
+    
+    # Clean up edge cases (bins with only 1 embryo have NaN std)
+    growth_curve['std_n'] = growth_curve['std_n'].fillna(0)
+    
+    # Calculate 95% Biological Variance Band (1.96 * standard deviation)
+    growth_curve['ci_lower'] = np.maximum(0, growth_curve['mean_n'] - 1.96 * growth_curve['std_n'])
+    growth_curve['ci_upper'] = growth_curve['mean_n'] + 1.96 * growth_curve['std_n']
+    
+    # 3. Save as a tiny, highly portable artifact
+    growth_curve.to_csv(output_path, index=False)
+    print(f"Saved empirical growth curve to {output_path}")
+    
+    return growth_curve

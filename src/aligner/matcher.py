@@ -36,7 +36,7 @@ class HungarianMatcher(BaseMatcher):
             row_ind_full, col_ind_full = linear_sum_assignment(C_aug)
             final_col_ind = col_ind_full[:N]
         else:
-            # Strict 1-to-1 matching without an escape hatch
+            # Strict 1-to-1 matching
             _, final_col_ind = linear_sum_assignment(C)
         
         if return_matrix:

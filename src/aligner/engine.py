@@ -59,8 +59,6 @@ class ModularAlignmentEngine:
     def _coarse_scan(self, frame, ref_frame, k=1, return_trace=False):
         history = []
         target_axis = ref_frame.pc1_axis
-        
-        # FIX 2: Explicitly pass 'use_slack' to the matcher
         kwargs = {'tau': self.config.tau, 'use_slack': self.config.use_slack, 'return_matrix': True}
         if self.config.coarse_matcher == MatcherType.SINKHORN:
             kwargs['epsilon'] = self.config.epsilon_coarse
@@ -78,7 +76,6 @@ class ModularAlignmentEngine:
                 
                 P = self.coarse_matcher.match(transformed, ref_frame.means, **kwargs)
                 
-                # FIX 3: Apply the tau penalty to any probability mass dumped to slack
                 assigned_cost = np.sum(P[:len(transformed), :ref_frame.n_real] * dist_sq_mat)
                 unassigned_count = len(transformed) - np.sum(P[:len(transformed), :ref_frame.n_real])
                 cost = assigned_cost + (unassigned_count * self.config.tau)
@@ -109,7 +106,6 @@ class ModularAlignmentEngine:
         R_curr, t_curr = initial_R, ref_frame.center_of_mass
         trace_data = [] if return_trace else None
         
-        # FIX 4: Explicitly pass 'use_slack' to the matcher
         kwargs = {'tau': self.config.tau, 'use_slack': self.config.use_slack, 'return_matrix': True}
         if self.config.icp_matcher == MatcherType.SINKHORN:
             kwargs['epsilon'] = self.config.epsilon_refine
@@ -127,124 +123,6 @@ class ModularAlignmentEngine:
             R_curr, t_curr = self.transformer.R, self.transformer.t
             
         return R_curr, t_curr, trace_data
-
-    def align_frame(self, frame, life_history_df=None, trace=False, return_diagnostics=False):
-        """Standardizes and aligns an experimental frame against biological hypotheses."""
-        frame.prepare()
-        candidate_ids = self._get_verified_candidates(len(frame))
-        if candidate_ids is None: return None
-        
-        best_overall_result = None
-        landscape_traces = {} 
-        k_tourn = self.config.k_tournament if self.config.init_strategy == InitStrategy.TOURNAMENT else 1
-        
-        for s_id in candidate_ids:
-            # 1. Hypothesis Generation (Static vs Time-Resolved)
-            if self.config.atlas_strategy == AtlasStrategy.TIME_RESOLVED:
-                state = self.hybrid_atlas.get_temporal_state(s_id, time_offset=0.5)
-                if not state: continue
-                adapter = GPToStaticAdapter(state['labels'], state['means'], state['variances'])
-                ref_frame = ReferenceFrame(state['labels'], adapter)
-            else:
-                labels = self.slice_db.get_labels(s_id)
-                ref_frame = ReferenceFrame(labels, self.atlas)
-            
-            # 2. Coarse Scan
-            valleys, coarse_history = self._coarse_scan(frame, ref_frame, k=k_tourn, return_trace=trace)
-            
-            tournament_outcomes = []
-            for i, init in enumerate(valleys):
-                refined_R, refined_t, icp_history = self._refine_icp(frame, ref_frame, init['R'], return_trace=trace)
-                aligned_coords = frame.normalized_coords @ refined_R + refined_t
-                
-                cost, assignments, D = self._final_mah_score(aligned_coords, ref_frame)
-                final_labels = [ref_frame.labels[idx] if idx < ref_frame.n_real else "unassigned" for idx in assignments]
-                
-                # Frame-Level Metrics
-                frame_id = f"{getattr(frame, 'embryo_id', 'unknown')}_tid{getattr(frame, 'time_idx', -1)}"
-                is_gen = self.slice_db.metadata.get(s_id, {}).get('is_augmented', False)
-                avg_cost = float(cost / len(aligned_coords)) if len(aligned_coords) > 0 else 0.0
-                
-                outcome = {
-                    'frame_id': frame_id,
-                    'slice_id': s_id, 
-                    'cost': cost, 
-                    'avg_cost': avg_cost,
-                    'canonical_time': getattr(frame, 'canonical_time', np.nan),
-                    'is_generated': is_gen,
-                    'coords': aligned_coords,
-                    'labels': final_labels, 
-                    'init_angle': init['angle'], 
-                    'start_rank': i + 1
-                }
-                
-                if self.config.enable_diagnostics:
-                    kwargs = {'tau': self.config.tau, 'use_slack': self.config.use_slack, 'return_matrix': True}
-                    if self.config.icp_matcher == MatcherType.SINKHORN: kwargs['epsilon'] = self.config.epsilon_refine
-                    P = self.icp_matcher.match(aligned_coords, ref_frame.means, **kwargs)
-                    outcome['per_cell_costs'] = np.sum(P[:len(aligned_coords), :ref_frame.n_real] * D, axis=1)
-                    outcome['entropy'] = entropy(P[:len(aligned_coords), :ref_frame.n_real] + 1e-12, axis=1)
-
-                tournament_outcomes.append(outcome)
-                
-                if best_overall_result is None or cost < best_overall_result['cost']:
-                    best_overall_result = outcome.copy()
-                    best_overall_result['ref_frame'] = ref_frame # Temp storage for diagnostics
-
-            if trace:
-                landscape_traces[s_id] = {'coarse': coarse_history, 'tournament': tournament_outcomes}
-                
-        # 5. Build Diagnostics DataFrame for the Global Winner
-        if best_overall_result and self.config.enable_diagnostics and return_diagnostics:
-            ref_frame = best_overall_result['ref_frame']
-            map_t = self.slice_db.metadata.get(best_overall_result['slice_id'], {}).get('MAP_time', np.nan)
-            
-            predicted_labels = best_overall_result['labels']
-            aligned_coords = best_overall_result['coords']
-            
-            # Lineage Extractor Regex
-            def extract_lineage(name):
-                if str(name).lower() == 'unassigned': return 'unassigned'
-                m = re.match(r'^([A-Z0-9]+)', str(name))
-                return m.group(1) if m else "unknown"
-
-            diag_df = pd.DataFrame({
-                'frame_id': best_overall_result['frame_id'],
-                'embryo_id': getattr(frame, 'embryo_id', 'unknown'),
-                'time_idx': getattr(frame, 'time_idx', np.nan),
-                'cell_name': predicted_labels, 
-                'lineage': [extract_lineage(lbl) for lbl in predicted_labels],
-                'x_aligned': aligned_coords[:, 0],
-                'y_aligned': aligned_coords[:, 1],
-                'z_aligned': aligned_coords[:, 2],
-                'mah_dist': best_overall_result.pop('per_cell_costs', np.nan),
-                'entropy': best_overall_result.pop('entropy', np.nan),
-                'map_time': map_t,
-                'frame_is_generated': best_overall_result['is_generated'],
-                'num_cells_in_frame': len(frame)
-            })
-            
-            if life_history_df is not None:
-                div_deltas = []
-                for lbl in diag_df['cell_name']:
-                    try:
-                        lh = life_history_df.loc[[str(lbl).strip()]]
-                        t_b, t_d = lh['mean_birth'].iloc[0], lh['mean_division'].iloc[0]
-                        div_deltas.append((map_t - t_b) / (t_d - t_b) if (t_d - t_b) > 0 else 0.0)
-                    except (KeyError, IndexError):
-                        div_deltas.append(0.0)
-                diag_df['div_delta'] = div_deltas
-            
-            if frame.valid_df is not None and 'cell_name' in frame.valid_df.columns:
-                true_labels = frame.valid_df['cell_name'].astype(str).values
-                diag_df['is_correct'] = (np.array(predicted_labels) == true_labels)
-            else:
-                diag_df['is_correct'] = False
-            
-            best_overall_result['diagnostics'] = diag_df
-
-        return (best_overall_result, landscape_traces) if trace else best_overall_result
-    
     
     def align_frame(self, frame, life_history_df=None, trace=False, return_diagnostics=False):
         """Standardizes and aligns an experimental frame against biological hypotheses."""

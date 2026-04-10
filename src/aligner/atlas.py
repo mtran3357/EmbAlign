@@ -8,7 +8,7 @@ from sklearn.gaussian_process.kernels import RBF, WhiteKernel
 import warnings
 from sklearn.exceptions import ConvergenceWarning
 
-# Import your new configuration schema
+# Import new configuration schema
 from aligner.config import PipelineConfig, AtlasStrategy, SliceStrategy
 
 class StaticGaussianAtlas:
@@ -194,65 +194,6 @@ class GPToStaticAdapter:
             invs.append(self.inv_covs[l])
             covs.append(self.covs[l])
         return np.array(mus), np.array(invs), np.array(covs)
-
-class AnchoredAtlas:
-    # Explicit Biological Constants 
-    ROOTS = ['ABal', 'ABar', 'ABpl', 'ABpr', 'EMS', 'P2']
-    MANUAL_DIVISIONS = {'EMS': ['E', 'MS'], 'P2': ['C', 'P3'], 'P3': ['D', 'P4'], 'P4': ['Z2', 'Z3']}
-
-    def __init__(self, lh_df: pd.DataFrame):
-        self.lh = lh_df.copy()
-        self.lh['cell_name'] = self.lh['cell_name'].str.strip()
-        self.lh = self.lh.set_index('cell_name')
-        
-        missing = [r for r in self.ROOTS if r not in self.lh.index]
-        if missing:
-            print(f"Warning: Missing roots from data: {missing}")
-            
-        self.tree = self._build_tree()
-
-    def _build_tree(self):
-        tree = {}
-        names = self.lh.index.tolist()
-        for name in names:
-            if name in self.MANUAL_DIVISIONS:
-                tree[name] = [c for c in self.MANUAL_DIVISIONS[name] if c in names]
-            children = [c for c in names if c.startswith(name) and len(c) == len(name) + 1]
-            if children:
-                tree.setdefault(name, []).extend(children)
-        return tree
-
-    def get_constrained_state(self, target_N: int, t_ref: float) -> List[str]:
-        progress = {}
-        for name, row in self.lh.iterrows():
-            if pd.isna(row['mean_division']):
-                progress[name] = -999 
-            else:
-                progress[name] = (t_ref - row['mean_division']) / (row['std_division'] + 1e-6)
-
-        def generate_slice(threshold):
-            ml_vector = []
-            def traverse(node):
-                children = self.tree.get(node, [])
-                if not children or progress.get(node, -999) < threshold:
-                    ml_vector.append(node)
-                else:
-                    for child in children:
-                        traverse(child)
-            
-            for r in self.ROOTS:
-                if r in self.lh.index:
-                    traverse(r)
-            return ml_vector
-
-        best_vector = []
-        for thresh in np.linspace(10, -10, 500): 
-            candidate = generate_slice(thresh)
-            if len(candidate) == target_N:
-                return candidate
-            if not best_vector or abs(len(candidate) - target_N) < abs(len(best_vector) - target_N):
-                best_vector = candidate
-        return best_vector
     
 class AnchoredAtlas:
     # Explicit Biological Constants 
@@ -283,7 +224,7 @@ class AnchoredAtlas:
 
     def get_constrained_state(self, target_N: int, t_ref: float) -> List[str]:
         """
-        Strictly generates a valid lineage state with EXACTLY target_N cells.
+        Strictly generates a valid lineage state with exactly target_N cells.
         Divides cells one-by-one based on their life progress to mathematically 
         prevent gaps from synchronous divisions.
         """
@@ -354,7 +295,6 @@ class AtlasFactory:
             gauss_df = self._build_static_gaussians(train_df)
             spatial_atlas = StaticGaussianAtlas.from_dataframe(gauss_df, min_samples=self.min_samples)
         else:
-            self.life_history = self._build_existence_matrix(train_df)
             gp_df = self._fit_gp_smoothed_means(train_df)
             spatial_atlas = GPTimeAtlas.from_dataframe(gp_df)
             
@@ -362,15 +302,13 @@ class AtlasFactory:
         if self.config.slice_strategy == SliceStrategy.OBSERVED:
             slice_df = self._build_observed_slices(train_df)
         else:
-            if self.life_history is None:
-                self.life_history = self._build_existence_matrix(train_df)
             slice_df = self._build_augmented_slice_db(train_df)
             
         slice_atlas = SliceAtlas.from_dataframe(slice_df)
         return spatial_atlas, slice_atlas
 
     def _build_static_gaussians(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Stripped down, highly efficient 3D Gaussian calculation."""
+        """3D Gaussian calculation."""
         df = df[(df["valid"] == 1) & df[["x_aligned", "y_aligned", "z_aligned"]].notna().all(axis=1)].copy()
         rows = []
         for cell_name, g in df.groupby("cell_name"):
@@ -566,37 +504,3 @@ class AtlasFactory:
         
         std_t = np.sqrt(np.sum(posteriors * (t_grid - np.sum(posteriors * t_grid))**2))
         return map_t, labels, np.exp(-std_t / 5.0), std_t
-    
-def build_empirical_growth_curve(full_df, bin_size=1.0, output_path="production_models/empirical_growth_curve.csv"):
-    """
-    Extracts the mean growth curve and 95% biological variance intervals from the raw dataset.
-    """
-    # 1. Get the cell count for every embryo at every frame
-    valid_cells = full_df[full_df['valid'] == 1].copy()
-    
-    # Bin the canonical time to smooth out micro-variations
-    valid_cells['time_bin'] = (valid_cells['canonical_time'] / bin_size).round() * bin_size
-    
-    # Count cells per frame
-    frame_counts = valid_cells.groupby(['embryo_id', 'time_bin'])['cell_name'].nunique().reset_index()
-    frame_counts.rename(columns={'cell_name': 'n_cells'}, inplace=True)
-    
-    # 2. Calculate Population Mean and 95% Interval per time bin
-    growth_curve = frame_counts.groupby('time_bin').agg(
-        mean_n=('n_cells', 'mean'),
-        std_n=('n_cells', 'std'),
-        n_embryos=('embryo_id', 'nunique')
-    ).reset_index()
-    
-    # Clean up edge cases (bins with only 1 embryo have NaN std)
-    growth_curve['std_n'] = growth_curve['std_n'].fillna(0)
-    
-    # Calculate 95% Biological Variance Band (1.96 * standard deviation)
-    growth_curve['ci_lower'] = np.maximum(0, growth_curve['mean_n'] - 1.96 * growth_curve['std_n'])
-    growth_curve['ci_upper'] = growth_curve['mean_n'] + 1.96 * growth_curve['std_n']
-    
-    # 3. Save as a tiny, highly portable artifact
-    growth_curve.to_csv(output_path, index=False)
-    print(f"Saved empirical growth curve to {output_path}")
-    
-    return growth_curve
