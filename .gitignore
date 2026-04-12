@@ -3,7 +3,9 @@ data/
 *.csv
 *.pkl
 *.npy
-
+# Allow production models 
+!production_models/
+!production_models/*.pkl
 # 2. Python Internals (Required: Prevents merge conflicts)
 __pycache__/
 .pytest_cache/
