@@ -4,7 +4,7 @@ config.py
 - Default hyperparameters for different pipeline configurations.
 
 atlas.py:
-- Machinery for constructing and queryinh empirical spatiotemporal reference atlas
+- Machinery for constructing and querying empirical spatiotemporal reference atlas (location, canonical time, and valid compositions)
 
 models.py:
 - Core data structures. Standardizes inputs via EmbryoFrame for observed data and AtlasFrame for atlas target data.
