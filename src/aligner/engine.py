@@ -115,8 +115,10 @@ class ModularAlignmentEngine:
             P = self.icp_matcher.match(current_pts, ref_frame.means, **kwargs)
             
             if return_trace:
-                col_ind = np.argmax(P, axis=1)
-                cost = np.sum((current_pts - ref_frame.means[col_ind])**2)
+                dist_sq_mat = np.sum((current_pts[:, None, :] - ref_frame.means[None, :, :])**2, axis=2)
+                assigned_cost = np.sum(P[:len(current_pts), :ref_frame.n_real] * dist_sq_mat)
+                unassigned_count = len(current_pts) - np.sum(P[:len(current_pts), :ref_frame.n_real])
+                cost = assigned_cost + (unassigned_count * self.config.tau)
                 trace_data.append({'iter': i, 'cost': cost})
             
             self.transformer.fit_weighted(frame.normalized_coords, ref_frame.means, P)
