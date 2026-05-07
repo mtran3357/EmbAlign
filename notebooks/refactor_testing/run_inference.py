@@ -36,7 +36,7 @@ def main():
     # ==========================================
     # 3. SPIN UP THE ENGINE
     # ==========================================
-    config = PipelineConfig.v2_0_dynamic()
+    config = PipelineConfig.v3_0_production()
     
     engine = ModularAlignmentEngine(
         config=config,
