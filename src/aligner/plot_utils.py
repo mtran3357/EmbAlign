@@ -120,7 +120,8 @@ VERSION_PALETTE = {
     "V1.1": "#2ecc71",  # Green
     "V2.0": "#f39c12",  # Orange
     "V2.1": "#3498db",  # Blue
-    "production_model": "#3498db"
+    "production_model": "#3498db",
+    "EmbAlign_CV": "#3498db"
     #"V3.0": "#34495e"   # Dark Gray
 }
 

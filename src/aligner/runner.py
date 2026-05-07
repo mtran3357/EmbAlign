@@ -153,9 +153,10 @@ class InferenceRunner:
     Strictly for production use. Runs the alignment engine on NEW, unannotated 
     embryo data and saves the predicted coordinates and labels. 
     """
-    def __init__(self, engine, oracle=None):
+    def __init__(self, engine, oracle=None, life_history_df=None):
         self.engine = engine
         self.oracle = oracle
+        self.life_history_df = life_history_df
     
     def run_for_report(self, unannotated_frames: list):
         """
@@ -170,6 +171,7 @@ class InferenceRunner:
                 # 1. Run Alignment with full tracing activated
                 best_res, landscape = self.engine.align_frame(
                     frame, 
+                    life_history_df=self.life_history_df,
                     trace=True, 
                     return_diagnostics=True
                 )
@@ -214,7 +216,7 @@ class InferenceRunner:
         for frame in tqdm(unannotated_frames, desc="Annotating Embryos"):
             try:
                 # 1. Align
-                res = self.engine.align_frame(frame, return_diagnostics=True)
+                res = self.engine.align_frame(frame, life_history_df=self.life_history_df, return_diagnostics=True)
                 if res is None:
                     continue
                     
