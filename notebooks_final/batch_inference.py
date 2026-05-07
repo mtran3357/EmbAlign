@@ -115,7 +115,7 @@ if __name__ == "__main__":
     
 # python /Users/miles/Documents/UCLA/shah_lab/embryo_aligner/notebooks_final/batch_inference.py \
 #     --input_dir /Users/miles/Documents/UCLA/shah_lab/embryo_aligner/notebooks/refactor_testing/inference_data_v2 \
-#     --output_dir /Users/miles/Documents/UCLA/shah_lab/embryo_aligner/notebooks/refactor_testing/test_inference \
+#     --output_dir /Users/miles/Documents/UCLA/shah_lab/test_inference \
 #     --model_dir /Users/miles/Documents/UCLA/shah_lab/embryo_aligner/notebooks_final/production_models \
 #     --scale_xy 0.1048 \
 #     --scale_z 0.75
