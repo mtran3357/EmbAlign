@@ -8,7 +8,7 @@ The notebooks_final directory contains:
 - batch_inference.py
     - Script for running batch inference on a directory of X,Y,Z nuclei pointcloud CSVs.
 - alignment_report.html
-    - Sample single frame alignment report generated from inference_walkthrough.ipynb
+    - Sample interactive alignment report generated from inference_walkthrough.ipynb
 - All notebooks, data, and models required to reproduce the analysis and figures in the EmbAlign manuscript
     - full_embalign_cv_run.ipynb
     - oos_validation.ipynb
