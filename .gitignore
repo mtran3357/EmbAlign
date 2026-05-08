@@ -19,6 +19,11 @@ __pycache__/
 # No notebooks for now
 *.ipynb
 
+# No manuscript stuff
+*.tiff
+*.pdf
+*.png
+
 # Ignore the hidden checkpoints folder created by Jupyter
 .ipynb_checkpoints/
 */.ipynb_checkpoints/*
