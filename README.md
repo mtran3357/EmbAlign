@@ -1,5 +1,17 @@
 EmbAlign is a fully automated 3D registration framework that determines lineage identities from single embryo snapshots of nuclei positions in C. elegans. Anchoring searches on observed cell counts, EmbAlign retrieves reference templates from a spatiotemporal atlas and refines assignments using an iterative Sinkhorn alignment procedure. This approach robustly handles positional variability and arbitrary orientations in both live and fixed uncompressed embryos.
 
+The notebooks_final directory contains:
+- inference_walkthrough.ipynb
+    - Basic EmbAlign usage for single frame inference.
+- fit_atlas_and_oracle.ipynb
+    - Fitting core EmbAlign models on labeled nuclei pointclouds.
+- batch_inference.py
+    - Script for running batch inference on a directory of X,Y,Z nuclei pointcloud CSVs.
+- All notebooks, data, and models required to reproduce the analysis and figures in the EmbAlign manuscript
+    - full_embalign_cv_run.ipynb
+    - oos_validation.ipynb
+    - fig1.ipynb
+
 config.py
 - Default hyperparameters for different pipeline configurations.
 
