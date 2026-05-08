@@ -14,6 +14,7 @@ The notebooks_final directory contains:
     - oos_validation.ipynb
     - fig1.ipynb
 
+The src directory contains the EmbAlign source code:
 config.py
 - Default hyperparameters for different pipeline configurations.
 
